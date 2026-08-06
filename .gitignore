@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+*.npy
+experiments/**/results/
+.venv/
+job.*.out
+scripts/job.*.out
+*.slurm.out
+.DS_Store
+parity_smoke_*.log
