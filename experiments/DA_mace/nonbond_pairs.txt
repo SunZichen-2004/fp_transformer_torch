@@ -1,0 +1,5 @@
+# non-bond lower-wall pairs (1-based), r_min=2.4 Å
+# C6-C24, C3-C18, O8-C20
+6 24
+3 18
+8 20

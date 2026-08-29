@@ -1,0 +1,4 @@
+# replica  role  d1(O7-C8)  d2(C1-C10)  from stage0245
+  289  substrate     1.4428    3.5665
+  172  ts            2.2845    2.3641
+  138  product       3.5410    1.5189

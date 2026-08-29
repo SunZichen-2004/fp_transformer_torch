@@ -1,0 +1,4 @@
+# Claisen rearrangement CV pairs (1-based)
+# d1 = O7–C8 (breaking), d2 = C1–C10 (forming)
+7 8
+1 10

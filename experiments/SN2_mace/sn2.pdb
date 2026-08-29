@@ -1,0 +1,9 @@
+REMARK   SN2 Cl- + CH3Cl vacuum (Cl_nuc C H H H Cl_lg)
+ATOM      1   CL CLN A   1       0.001   0.002  -2.360  1.00  0.00          CL
+ATOM      2    C CH3 A   1       0.028  -0.008  -0.343  1.00  0.00           C
+ATOM      3   H1 CH3 A   1       1.039   0.009   0.035  1.00  0.00           H
+ATOM      4   H2 CH3 A   1      -0.531   0.891   0.047  1.00  0.00           H
+ATOM      5   H3 CH3 A   1      -0.539  -0.897  -0.005  1.00  0.00           H
+ATOM      6   CL CLG A   1       0.001   0.002   2.626  1.00  0.00          CL
+TER
+END

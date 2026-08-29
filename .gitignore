@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.DS_Store
+Untitled
+
+# simulation outputs / binary data (keep scripts and source)
+*.npy
+*.npz
+*.png
+*.pdf
+*.tar.gz
+*.gif
+experiments/**/results/
+experiments/**/meta_snaps/
+experiments/**/live/
+
+# SLURM job logs (keep *.slurm submit scripts)
+*.out
+*.err
+parity_smoke_*.log
+*.bak
+*.log
+
+# replica-exchange / run archives
+**/remd_*/

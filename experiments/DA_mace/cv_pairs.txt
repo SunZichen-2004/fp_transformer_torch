@@ -1,0 +1,5 @@
+# CV bonding pairs (1-based): d1, d2, d3 for SoftDistanceS12
+# s1 = c1+c2+c3, s2 = c2-c3
+2 15
+3 13
+7 24

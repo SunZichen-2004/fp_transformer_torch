@@ -1,0 +1,40 @@
+# Consecutive λ_i → λ_{i+1} transitions (blue→red). 9 frames → 8 panels (2×4).
+mode: transitions
+result_dir: /storage/gaoyiqinLab/sunzicheng/work/torch_fpt/fp_transformer_torch-master/experiments/rearrangement_mace/results/claisen_fpt_mh-0_g8_85939
+output: /storage/gaoyiqinLab/sunzicheng/work/torch_fpt/fp_transformer_torch-master/experiments/rearrangement_mace/results/claisen_fpt_mh-0_g8_85939/d1_d2/stage_transitions_selected.png
+
+nrows: 2
+ncols: 4
+point_size: 2.2
+point_alpha: 0.35
+blue_alpha: 0.50   # slightly more opaque than red
+red_alpha: 0.35
+line_alpha: 0.35
+
+panels:
+  - match: stage_init_cv.npy
+    label: "init"
+  - lambda: 0.5
+    phase: heal
+    label: "0.5"
+  - lambda: 0.08
+    phase: heal
+    label: "0.08"
+  - lambda: 0.05
+    phase: heal
+    label: "0.05"
+  - lambda: 0.025
+    phase: stage
+    label: "0.025"
+  - lambda: 0.041
+    phase: stage
+    label: "0.041"
+  - lambda: 0.055
+    phase: stage
+    label: "0.055"
+  - lambda: 0.079
+    phase: stage
+    label: "0.079"
+  - lambda: 0.093
+    phase: stage
+    label: "0.093"

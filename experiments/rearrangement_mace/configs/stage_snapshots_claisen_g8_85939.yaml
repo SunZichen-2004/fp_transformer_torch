@@ -1,0 +1,34 @@
+# 8 CV snapshots (2×4). Label λ = xx at upper-right of each panel.
+mode: snapshots
+result_dir: /storage/gaoyiqinLab/sunzicheng/work/torch_fpt/fp_transformer_torch-master/experiments/rearrangement_mace/results/claisen_fpt_mh-0_g8_85939
+output: /storage/gaoyiqinLab/sunzicheng/work/torch_fpt/fp_transformer_torch-master/experiments/rearrangement_mace/results/claisen_fpt_mh-0_g8_85939/d1_d2/stage_snapshots_selected.png
+
+nrows: 2
+ncols: 4
+point_size: 4.0
+point_alpha: 0.55
+
+panels:
+  - match: stage_init_cv.npy
+    label: "init"
+  - lambda: 0.5
+    phase: heal
+    label: "0.5"
+  - lambda: 0.08
+    phase: heal
+    label: "0.08"
+  - lambda: 0.05
+    phase: heal
+    label: "0.05"
+  - lambda: 0.025
+    phase: stage
+    label: "0.025"
+  - lambda: 0.041
+    phase: stage
+    label: "0.041"
+  - lambda: 0.055
+    phase: stage
+    label: "0.055"
+  - lambda: 0.071
+    phase: stage
+    label: "0.071"

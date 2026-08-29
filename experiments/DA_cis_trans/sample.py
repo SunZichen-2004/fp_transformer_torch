@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+"""IMDA cis/trans + MACE + paper 2D CV + FPT (vacuum).
+
+CVs::
+
+    cv1 = HLDA combination of d1..d6 (nm) with paper sigmoid transform
+    cv2 = c8 * c17  (cis < 0, trans > 0)
+
+Workflow: short unbiased NVT MD from the exact reactant (no noise) → use final
+ensemble as FPT initial configurations.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+
+ROOT = Path(__file__).resolve().parents[2]
+EXPERIMENT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(EXPERIMENT_DIR))
+
+os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+
+from cis_trans_cv import DACisTransCV, WALL_PAIRS  # noqa: E402
+from io_utils import (  # noqa: E402
+    atomic_numbers_from_symbols,
+    load_xyz,
+    masses_from_symbols,
+    save_stage_artifacts,
+)
+from fp_transformer_torch import (  # noqa: E402
+    FPTBias,
+    GaussianKernel,
+    PerReplicaRescaleConfig,
+    QuadraticDistanceWall,
+    TorchSimFokkerPlanckIntegrator,
+    load_sharded_mace_torch_sim_model,
+)
+from fp_transformer_torch.distance import pairwise_distance  # noqa: E402
+from fp_transformer_torch.potential.mace import (  # noqa: E402
+    batched_coordinates_to_sim_state,
+    sim_state_to_batched_coordinates,
+)
+from fp_transformer_torch.potential.sharded_mace import parse_cuda_devices  # noqa: E402
+
+DEFAULT_XYZ = EXPERIMENT_DIR / "reactant.xyz"
+DEFAULT_MASS = EXPERIMENT_DIR / "mass.txt"
+KB_EV_PER_K = 8.617330337217213e-5
+
+
+def initial_bandwidth_from_collective_variable(
+    collective_variable: torch.Tensor,
+) -> float:
+    distance = pairwise_distance(collective_variable)
+    upper = torch.triu(torch.ones_like(distance, dtype=torch.bool), diagonal=1)
+    values = distance[upper]
+    positive = values[values > 0]
+    if positive.numel() == 0:
+        return 0.5
+    median = float(torch.median(positive).item())
+    if not np.isfinite(median) or median <= 0.0:
+        return 0.5
+    return median
+
+
+def load_masses(path: Path, num_atoms: int, symbols: list[str]) -> np.ndarray:
+    if path.is_file():
+        mass_vals = np.loadtxt(path, dtype=np.float64).reshape(-1)
+        if int(mass_vals[0]) == num_atoms and mass_vals.size == num_atoms + 1:
+            mass_vals = mass_vals[1:]
+        if mass_vals.size < num_atoms:
+            raise ValueError(f"mass file too short: {path}")
+        return mass_vals[:num_atoms].astype(np.float64)
+    return masses_from_symbols(symbols)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--mace-model", type=str, default="mh-0")
+    p.add_argument("--mace-cache", type=str, default=None)
+    p.add_argument("--xyz", type=str, default=str(DEFAULT_XYZ))
+    p.add_argument("--mass-file", type=str, default=str(DEFAULT_MASS))
+    p.add_argument("--replicas", type=int, default=1024)
+    p.add_argument("--stage-steps", type=int, default=20)
+    p.add_argument("--steps", type=int, default=None)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--timestep", type=float, default=0.001)
+    p.add_argument("--baoab-dt", type=float, default=None)
+    p.add_argument("--langevin-friction", type=float, default=1.0)
+    p.add_argument("--baoab-langevin-gamma", type=float, default=None)
+    p.add_argument("--temperature", type=float, default=300.0)
+    p.add_argument("--kB", type=float, default=KB_EV_PER_K)
+    p.add_argument("--beta0", type=float, default=None)
+    p.add_argument("--lambda-init", type=float, default=0.1)
+    p.add_argument("--lambda-max", type=float, default=0.5)
+    p.add_argument("--ess-threshold", type=float, default=0.9)
+    p.add_argument("--min-lambda-step", type=float, default=0.05)
+    p.add_argument("--max-lambda-step", type=float, default=0.2)
+    p.add_argument("--num-lambda-trials", type=int, default=10)
+    p.add_argument("--update-pace", type=int, default=20)
+    p.add_argument(
+        "--init-npy",
+        type=str,
+        default=None,
+        help="Optional precomputed (B,N,3) init; skips pre-MD if set",
+    )
+    p.add_argument(
+        "--pre-md-steps",
+        type=int,
+        default=200,
+        help="Unbiased NVT MD steps from exact xyz (no noise) before FPT",
+    )
+    p.add_argument("--pre-md-dump-every", type=int, default=50)
+    p.add_argument("--max-xyz-frames", type=int, default=None)
+    p.add_argument("--heal-lambdas", type=str, default=None)
+    p.add_argument("--heal-steps", type=int, default=100)
+    p.add_argument("--cell-length", type=float, default=40.0)
+    p.add_argument("--charge", type=float, default=0.0)
+    p.add_argument("--spin", type=float, default=1.0)
+    p.add_argument("--wall-d-max", type=float, default=8.0)
+    p.add_argument("--wall-k", type=float, default=10.0)
+    p.add_argument("--dtype", type=str, default="float32", choices=["float32", "float64"])
+    p.add_argument("--device", type=str, default="cuda")
+    p.add_argument("--devices", type=str, default=None)
+    p.add_argument("--n-gpus", type=int, default=1)
+    p.add_argument("--output", type=Path, default=None)
+    p.add_argument("--verbose", action="store_true")
+    p.add_argument("--verbose-pace", type=int, default=100)
+    p.add_argument("--no-progress", action="store_true")
+    p.add_argument("--cv-grad-clip-norm", type=float, default=1.0)
+    p.add_argument("--rescale-per-replica", action="store_true", default=True)
+    p.add_argument("--no-rescale-per-replica", action="store_true")
+    p.add_argument("--rescale-adaptive-ref-quantile", type=float, default=0.5)
+    p.add_argument("--rescale-adaptive-band-low", type=float, default=0.8)
+    p.add_argument("--rescale-adaptive-band-high", type=float, default=1.2)
+    p.add_argument("--rescale-bw-min", type=float, default=1e-3)
+    p.add_argument("--rescale-bw-max", type=float, default=4.0)
+    p.add_argument("--rescale-fixed-row-sum-min", type=float, default=2.0)
+    p.add_argument("--rescale-fixed-row-sum-max", type=float, default=5.0)
+    p.add_argument("--rew-lambda-init", type=float, default=None)
+    p.add_argument("--rew-lambda-max", type=float, default=None)
+    p.add_argument("--rew-ess-threshold", type=float, default=None)
+    p.add_argument("--rew-min-lambda-step", type=float, default=None)
+    p.add_argument("--rew-max-lambda-step", type=float, default=None)
+    p.add_argument("--rew-num-lambda-trials", type=int, default=None)
+    p.add_argument("--rew-anneal-ref-temperature", type=float, default=None)
+    return p
+
+
+def _resolve_args(args: argparse.Namespace) -> argparse.Namespace:
+    if args.steps is not None:
+        args.stage_steps = args.steps
+    if args.baoab_dt is not None:
+        args.timestep = args.baoab_dt
+    if args.baoab_langevin_gamma is not None:
+        args.langevin_friction = args.baoab_langevin_gamma
+    if args.rew_lambda_init is not None:
+        args.lambda_init = args.rew_lambda_init
+    if args.rew_lambda_max is not None:
+        args.lambda_max = args.rew_lambda_max
+    if args.rew_ess_threshold is not None:
+        args.ess_threshold = args.rew_ess_threshold
+    if args.rew_min_lambda_step is not None:
+        args.min_lambda_step = args.rew_min_lambda_step
+    if args.rew_max_lambda_step is not None:
+        args.max_lambda_step = args.rew_max_lambda_step
+    if args.rew_num_lambda_trials is not None:
+        args.num_lambda_trials = args.rew_num_lambda_trials
+    if args.no_rescale_per_replica:
+        args.rescale_per_replica = False
+    temp = args.temperature
+    if args.rew_anneal_ref_temperature is not None:
+        temp = args.rew_anneal_ref_temperature
+    if args.beta0 is None:
+        args.beta0 = 1.0 / (float(args.kB) * float(temp))
+    heal: list[float] = []
+    if args.heal_lambdas:
+        for part in str(args.heal_lambdas).replace(";", ",").split(","):
+            part = part.strip()
+            if part:
+                heal.append(float(part))
+    args.heal_lambda_list = heal
+    return args
+
+
+def _cv_pack(cv_fn: DACisTransCV, coords: torch.Tensor):
+    parts = cv_fn.components(coords)
+    cv = torch.stack([parts["cv1"], parts["cv2"]], dim=-1)
+    return (
+        cv.detach().cpu().numpy(),
+        parts["c8"].detach().cpu().numpy(),
+        parts["c17"].detach().cpu().numpy(),
+    )
+
+
+def _cv_stats(cv: np.ndarray) -> str:
+    bits = []
+    for i, name in enumerate(("cv1", "cv2")):
+        if i >= cv.shape[1]:
+            break
+        col = cv[:, i]
+        bits.append(
+            f"{name}[min/med/max]={col.min():.3f}/{np.median(col):.3f}/{col.max():.3f}"
+        )
+    return "  ".join(bits)
+
+
+def main() -> None:
+    args = _resolve_args(build_parser().parse_args())
+    primary = torch.device(
+        args.device if (args.device != "cuda" or torch.cuda.is_available()) else "cpu"
+    )
+    if args.devices:
+        mace_devices = parse_cuda_devices(args.devices, fallback=primary)
+    else:
+        mace_devices = parse_cuda_devices(int(args.n_gpus), fallback=primary)
+    device = mace_devices[0]
+    dtype = torch.float32 if args.dtype == "float32" else torch.float64
+    torch.manual_seed(int(args.seed))
+    np.random.seed(int(args.seed))
+
+    import torch_sim as ts
+    from torch_sim.models.interface import SumModel
+
+    print(
+        f"device={device}  dtype={args.dtype}  beta0={args.beta0:.6g}  "
+        f"mace={args.mace_model}  T={args.temperature} K  charge={args.charge}  "
+        f"n_gpus={len(mace_devices)}  λ_init={args.lambda_init}",
+        flush=True,
+    )
+
+    symbols, xyz_coords = load_xyz(Path(args.xyz))
+    atomic_numbers = atomic_numbers_from_symbols(symbols)
+    num_atoms = int(atomic_numbers.shape[0])
+    masses = load_masses(Path(args.mass_file), num_atoms, symbols)
+    print(f"IMDA num_atoms={num_atoms}  wall_pairs(0-based)={WALL_PAIRS}", flush=True)
+
+    mace_model = load_sharded_mace_torch_sim_model(
+        args.mace_model,
+        devices=mace_devices,
+        dtype=dtype,
+        compute_forces=True,
+        compute_stress=False,
+        cache_dir=args.mace_cache,
+    )
+    print(f"[init] MACE loaded  n_gpus={getattr(mace_model, 'n_gpus', 1)}", flush=True)
+
+    cv_fn = DACisTransCV()
+    wall = QuadraticDistanceWall(
+        list(WALL_PAIRS),
+        d_max=float(args.wall_d_max),
+        k=float(args.wall_k),
+        device=device,
+        dtype=dtype,
+        n_atoms_per_system=num_atoms,
+    )
+
+    out = Path(
+        args.output
+        or (
+            EXPERIMENT_DIR
+            / "results"
+            / f"da_cis_trans_fpt_{args.mace_model}_{args.replicas}"
+        )
+    )
+    out.mkdir(parents=True, exist_ok=True)
+
+    mass_t = torch.as_tensor(masses, dtype=dtype, device=device)
+    z_t = torch.as_tensor(atomic_numbers, dtype=torch.long, device=device)
+    cell = torch.eye(3, device=device, dtype=dtype) * float(args.cell_length)
+
+    if args.init_npy:
+        path = Path(os.path.abspath(os.path.expanduser(args.init_npy)))
+        loaded = np.load(path)
+        if loaded.ndim != 3 or loaded.shape[1] != num_atoms:
+            raise ValueError(f"bad init npy {path}: {loaded.shape}")
+        if args.replicas > loaded.shape[0]:
+            raise ValueError(f"--replicas={args.replicas} > B={loaded.shape[0]}")
+        loaded = loaded[: args.replicas]
+        print(f"[init] using init-npy={path} (skip pre-MD)", flush=True)
+        coordinate = torch.as_tensor(loaded, dtype=dtype, device=device)
+    else:
+        # Exact reactant, no noise; Langevin thermal noise diversifies replicas.
+        base = xyz_coords.astype(np.float64)
+        loaded = np.repeat(base[None, ...], args.replicas, axis=0)
+        coordinate = torch.as_tensor(loaded, dtype=dtype, device=device)
+        print(
+            f"[pre-md] start from exact xyz × {args.replicas} (no noise)  "
+            f"steps={args.pre_md_steps}",
+            flush=True,
+        )
+        md_model = SumModel(mace_model, wall)
+        state_md = batched_coordinates_to_sim_state(
+            coordinate,
+            atomic_numbers=z_t,
+            masses=mass_t,
+            cell=cell,
+            pbc=False,
+            charge=float(args.charge),
+            spin=float(args.spin),
+        )
+        dump_every = max(1, int(args.pre_md_dump_every))
+        md_steps = max(0, int(args.pre_md_steps))
+        done = 0
+        dumps: list[np.ndarray] = []
+        while done < md_steps:
+            n_this = min(dump_every, md_steps - done)
+            state_md = ts.integrate(
+                state_md,
+                md_model,
+                integrator=ts.Integrator.nvt_langevin,
+                n_steps=n_this,
+                temperature=float(args.temperature),
+                timestep=float(args.timestep),
+                gamma=float(args.langevin_friction),
+                autobatcher=False,
+                pbar=False,
+            )
+            done += n_this
+            coords = sim_state_to_batched_coordinates(state_md)
+            dumps.append(coords.detach().cpu().numpy().astype(np.float32))
+            print(f"[pre-md] step={done}", flush=True)
+
+        if dumps:
+            traj = np.stack(dumps, axis=0)  # (T, B, N, 3)
+            np.save(out / "pre_md_traj.npy", traj)
+            coordinate = torch.as_tensor(dumps[-1], dtype=dtype, device=device)
+        np.save(out / "init_coords_from_pre_md.npy", coordinate.detach().cpu().numpy())
+        cv_md, c8_md, c17_md = _cv_pack(cv_fn, coordinate)
+        save_stage_artifacts(
+            out,
+            "stage_pre_md",
+            coordinate.detach().cpu().numpy(),
+            cv_md,
+            symbols,
+            title=f"IMDA after pre-MD ({md_steps} steps)",
+            c8=c8_md,
+            c17=c17_md,
+            max_xyz_frames=args.max_xyz_frames,
+        )
+        print(f"[pre-md] FPT init ready  {_cv_stats(cv_md)}", flush=True)
+
+    collective0 = cv_fn(coordinate)
+    bandwidth0 = initial_bandwidth_from_collective_variable(collective0)
+    cv0, c8_0, c17_0 = _cv_pack(cv_fn, coordinate)
+    print(
+        f"[init] bw_init={bandwidth0:.6g}  replicas={args.replicas}  {_cv_stats(cv0)}",
+        flush=True,
+    )
+
+    rescale = PerReplicaRescaleConfig(
+        enabled=bool(args.rescale_per_replica),
+        target_mode="adaptive_quantile",
+        adaptive_ref_quantile=args.rescale_adaptive_ref_quantile,
+        adaptive_band_low=args.rescale_adaptive_band_low,
+        adaptive_band_high=args.rescale_adaptive_band_high,
+        bandwidth_min=args.rescale_bw_min,
+        bandwidth_max=args.rescale_bw_max,
+        global_pull=0.02,
+        fixed_row_sum_min=float(args.rescale_fixed_row_sum_min),
+        fixed_row_sum_max=float(args.rescale_fixed_row_sum_max),
+        use_normalized_kernel=False,
+        normalize_row_sum_by_replicas=False,
+    )
+    kernel = GaussianKernel(
+        args.replicas,
+        bandwidth=bandwidth0,
+        distance_function=pairwise_distance,
+        rescale_per_replica=bool(args.rescale_per_replica),
+        rescale_per_replica_config=rescale,
+        device=device,
+        dtype=dtype,
+    )
+
+    cv_clip = (
+        None
+        if args.cv_grad_clip_norm is None or args.cv_grad_clip_norm <= 0.0
+        else float(args.cv_grad_clip_norm)
+    )
+    fpt_bias = FPTBias(
+        cv_fn,
+        kernel,
+        kernel_grad_beta=float(args.lambda_init) * float(args.beta0),
+        device=device,
+        dtype=dtype,
+        collective_variable_grad_clip=cv_clip,
+        update_pace=args.update_pace,
+        n_atoms_per_system=num_atoms,
+    )
+    model = SumModel(mace_model, fpt_bias, wall)
+    print(
+        f"[init] SumModel(MACE, FPTBias, Wall)  λ_init={args.lambda_init}  "
+        f"cv_clip={cv_clip}  wall d_max={args.wall_d_max} k={args.wall_k}",
+        flush=True,
+    )
+
+    state0 = batched_coordinates_to_sim_state(
+        coordinate,
+        atomic_numbers=z_t,
+        masses=mass_t,
+        cell=cell,
+        pbc=False,
+        charge=float(args.charge),
+        spin=float(args.spin),
+    )
+
+    integrator = TorchSimFokkerPlanckIntegrator(
+        model,
+        fpt_bias,
+        cv_fn,
+        kernel,
+        timestep=float(args.timestep),
+        langevin_friction=float(args.langevin_friction),
+        temperature=float(args.temperature),
+        beta0=float(args.beta0),
+        lambda_init=float(args.lambda_init),
+        lambda_max=float(args.lambda_max),
+        ess_threshold=float(args.ess_threshold),
+        min_lambda_step=float(args.min_lambda_step),
+        max_lambda_step=float(args.max_lambda_step),
+        num_lambda_trials=int(args.num_lambda_trials),
+        update_pace=int(args.update_pace),
+        device=device,
+        dtype=dtype,
+    )
+
+    def _stage_tag(stage_i: int, lam: float, *, phase: str) -> str:
+        prefix = "heal" if phase == "heal" else "stage"
+        return f"{prefix}{stage_i:04d}_lambda{lam:.6f}".replace(".", "p")
+
+    def on_stage_end(stage_i: int, lam: float, st, phase: str = "anneal") -> None:
+        coords = sim_state_to_batched_coordinates(st)
+        cv_np, c8_np, c17_np = _cv_pack(cv_fn, coords)
+        tag = _stage_tag(stage_i, lam, phase=phase)
+        np.save(
+            out / f"{tag}_bandwidth.npy",
+            integrator.gaussian_kernel.bandwidth.detach().cpu().numpy(),
+        )
+        metrics = integrator._last_step_metrics
+        metrics.update(integrator.kinetic_temperature_stats(st))
+        print(
+            f"[stage-end/{phase}] {tag}  "
+            f"T_kin mean={metrics.get('kinetic_temperature_mean', float('nan')):.2f} K  "
+            f"{_cv_stats(cv_np)}",
+            flush=True,
+        )
+        save_stage_artifacts(
+            out,
+            tag,
+            coords.detach().cpu().numpy(),
+            cv_np,
+            symbols,
+            title=f"IMDA-FPT  {phase} {tag}",
+            c8=c8_np,
+            c17=c17_np,
+            max_xyz_frames=args.max_xyz_frames,
+        )
+
+    save_stage_artifacts(
+        out,
+        "stage_init",
+        coordinate.detach().cpu().numpy(),
+        cv0,
+        symbols,
+        title="IMDA-FPT init",
+        c8=c8_0,
+        c17=c17_0,
+        max_xyz_frames=args.max_xyz_frames,
+    )
+
+    if args.heal_lambda_list:
+        fpt_bias.set_kernel_grad_beta(
+            float(args.heal_lambda_list[0]) * float(args.beta0)
+        )
+        print(
+            f"[init] heal schedule λ={args.heal_lambda_list}  "
+            f"heal_steps={args.heal_steps}  then anneal λ_init={args.lambda_init}",
+            flush=True,
+        )
+
+    final_state = integrator.run(
+        state0,
+        args.stage_steps,
+        verbose=args.verbose,
+        verbose_pace=args.verbose_pace,
+        show_progress=not args.no_progress,
+        on_stage_end=on_stage_end,
+        heal_lambdas=args.heal_lambda_list or None,
+        heal_steps=int(args.heal_steps) if args.heal_lambda_list else None,
+    )
+    final_coords = sim_state_to_batched_coordinates(final_state)
+    final_cv, final_c8, final_c17 = _cv_pack(cv_fn, final_coords)
+    np.save(
+        out / "final_bandwidth.npy",
+        integrator.gaussian_kernel.bandwidth.detach().cpu().numpy(),
+    )
+    save_stage_artifacts(
+        out,
+        "stage_final",
+        final_coords.detach().cpu().numpy(),
+        final_cv,
+        symbols,
+        title=f"IMDA-FPT final λ={integrator.lambda_current:.4g}",
+        c8=final_c8,
+        c17=final_c17,
+        max_xyz_frames=args.max_xyz_frames,
+    )
+    print(f"done  out={out}  lambda={integrator.lambda_current}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

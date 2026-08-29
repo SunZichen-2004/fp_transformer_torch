@@ -1,0 +1,3 @@
+# Cl_nuc-C and Cl_lg-C (1-based atom indices)
+1 2
+6 2
