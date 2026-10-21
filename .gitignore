@@ -10,16 +10,37 @@ build/
 .DS_Store
 Untitled
 
-# simulation outputs / binary data (keep scripts and source)
+# Binary dumps by default (trajectories, hills, FES caches, …)
 *.npy
 *.npz
 *.png
 *.pdf
 *.tar.gz
 *.gif
+
+# Run outputs
 experiments/**/results/
 experiments/**/meta_snaps/
 experiments/**/live/
+**/remd_*/
+
+# Keep necessary initial coordinates / US starts (not under results/)
+!experiments/**/init_coords*.npy
+!experiments/**/init_us*.npy
+!experiments/**/init_us*.npz
+experiments/**/results/**
+
+# Keep box topology needed to relaunch water / MLMM runs
+!experiments/**/mm_box/topology.npz
+!experiments/**/mlmm_box/topology.npz
+!experiments/**/mlmm_box_test/topology.npz
+
+# Trajectories (explicit; also covered by *.npy / *.xyz)
+**/trajectory.xyz
+**/trajectory_*.npy
+**/pre_md_traj.npy
+**/*_traj.npy
+**/md_traj_*.npy
 
 # SLURM job logs (keep *.slurm submit scripts)
 *.out
@@ -27,6 +48,3 @@ experiments/**/live/
 parity_smoke_*.log
 *.bak
 *.log
-
-# replica-exchange / run archives
-**/remd_*/
