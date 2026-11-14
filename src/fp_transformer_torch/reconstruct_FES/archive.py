@@ -88,7 +88,7 @@ def project_log_probability(logp, axes, *, temperature=300.0, reaction=False):
         marginal = _lse(logp, other) if other else logp
         result[f"fes_2d_{i}_{j}"] = (-kt * (marginal - marginal.max())).numpy()
     mesh = np.meshgrid(*axes, indexing="ij")
-    if reaction:
+    if reaction and len(axes) == 2:
         mask = mesh[1] - mesh[0] < 0
     elif len(axes) == 3:
         mask = np.logical_and.reduce([m < 0 for m in mesh])

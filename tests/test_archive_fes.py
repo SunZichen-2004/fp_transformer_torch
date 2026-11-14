@@ -74,3 +74,27 @@ def test_incomplete_output_is_explicit(tmp_path):
     writer.save()
     with pytest.raises(ValueError, match="incomplete"):
         reconstruct_sfpt(tmp_path / "trajectory.npz", [np.array([-1.0, 1.0])] * 2)
+
+
+def test_nonperiodic_one_dimensional_archive(tmp_path):
+    writer = TrajectoryArchive(tmp_path / "trajectory.npz")
+    writer.append(
+        "production",
+        10,
+        0.001,
+        0.1,
+        np.zeros((4, 1, 3)),
+        np.array([[-1.0], [-0.8], [0.5], [1.0]]),
+        np.full(4, 0.4),
+    )
+    writer.save(complete=True)
+    axis = np.linspace(-2, 2, 31)
+    result = reconstruct_sfpt(writer.path, [axis], periodic=False)
+    probability = np.exp(result["joint_log_probability"])
+    expected = (
+        0.001987204259
+        * 300
+        * np.log(probability[axis < 0].sum() / probability[axis >= 0].sum())
+    )
+    np.testing.assert_allclose(result["delta_g_kcal_mol"], expected)
+    assert np.isfinite(result["fes_1d_0"]).all()

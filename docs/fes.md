@@ -15,6 +15,8 @@ For three CVs, pass three axes. Joint density is reconstructed in three dimensio
 
 Physical probability is proportional to the averaged joint KDE raised to `(1+lambda)/lambda`. Every returned FES is in kcal/mol and shifted to a minimum of zero. Angular grids should avoid duplicating the periodic endpoint. For nonperiodic distance CVs, use `periodic=False` and axes spanning both basins.
 
+The convenience `delta_g_kcal_mol` follows the paper's sign convention, `kB*T*log(P1/P2)`. For two angular CVs, basin 1 has the first angle below zero; for the three-angle tetrapeptide, all three angles are below zero. For the two-distance reaction, basin 1 is the product region `d2-d1 < 0`. One-dimensional profiles split at zero. For other macrostate definitions, integrate the returned normalized `joint_log_probability` over the desired masks explicitly.
+
 `reconstruct_metad` evaluates the saved final B-spline coefficients, or rebuilds the same bias from saved hills. `end_ps` can select an earlier saved hill count. It reconstructs the full joint physical probability from the cumulative bias before projecting. A two-dimensional slice of a three-dimensional bias is not a marginalized FES.
 
 The retained neural fitter can be invoked with:
