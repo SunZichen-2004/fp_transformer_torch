@@ -26,9 +26,7 @@ class GaffPotential(Potential):
                 raise FileNotFoundError(f"Required parameter file not found: {path}")
 
         raw = convert_sponge_input_to_dict(sponge_prefix)
-        self.num_atoms = (
-            int(num_atoms) if num_atoms is not None else int(len(raw["C"]))
-        )
+        self.num_atoms = int(num_atoms) if num_atoms is not None else int(len(raw["C"]))
         if self.num_atoms <= 0:
             raise ValueError(f"Invalid number of atoms: {self.num_atoms}")
 

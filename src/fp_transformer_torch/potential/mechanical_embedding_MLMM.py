@@ -60,6 +60,7 @@ def _ensure_electrostatics_ops() -> None:
         ensure_electrostatics_ops_registered()
         _ELEC_OPS_READY = True
 
+
 # ---------------------------------------------------------------------------
 # Unit conversions (Amber/SPONGE kcal·mol⁻¹ → metal eV)
 # ---------------------------------------------------------------------------
@@ -120,26 +121,42 @@ class MLMMTopology:
     atomic_numbers: torch.Tensor  # [N] long
     masses: torch.Tensor  # [N]
 
-    bond_idx: torch.Tensor = field(default_factory=lambda: torch.zeros(0, 2, dtype=torch.long))
+    bond_idx: torch.Tensor = field(
+        default_factory=lambda: torch.zeros(0, 2, dtype=torch.long)
+    )
     bond_k: torch.Tensor = field(default_factory=lambda: torch.zeros(0))
     bond_r0: torch.Tensor = field(default_factory=lambda: torch.zeros(0))
 
-    angle_idx: torch.Tensor = field(default_factory=lambda: torch.zeros(0, 3, dtype=torch.long))
+    angle_idx: torch.Tensor = field(
+        default_factory=lambda: torch.zeros(0, 3, dtype=torch.long)
+    )
     angle_k: torch.Tensor = field(default_factory=lambda: torch.zeros(0))
     angle_theta0: torch.Tensor = field(default_factory=lambda: torch.zeros(0))
 
-    dihedral_idx: torch.Tensor = field(default_factory=lambda: torch.zeros(0, 4, dtype=torch.long))
+    dihedral_idx: torch.Tensor = field(
+        default_factory=lambda: torch.zeros(0, 4, dtype=torch.long)
+    )
     dihedral_k: torch.Tensor = field(default_factory=lambda: torch.zeros(0))
-    dihedral_n: torch.Tensor = field(default_factory=lambda: torch.zeros(0, dtype=torch.long))
+    dihedral_n: torch.Tensor = field(
+        default_factory=lambda: torch.zeros(0, dtype=torch.long)
+    )
     dihedral_phi0: torch.Tensor = field(default_factory=lambda: torch.zeros(0))
 
     # Excluded pairs for Coulomb / LJ (local atom indices, unordered i<j preferred)
-    exclude_i: torch.Tensor = field(default_factory=lambda: torch.zeros(0, dtype=torch.long))
-    exclude_j: torch.Tensor = field(default_factory=lambda: torch.zeros(0, dtype=torch.long))
+    exclude_i: torch.Tensor = field(
+        default_factory=lambda: torch.zeros(0, dtype=torch.long)
+    )
+    exclude_j: torch.Tensor = field(
+        default_factory=lambda: torch.zeros(0, dtype=torch.long)
+    )
 
     # Optional 1–4 scaling (MM region only); factors multiply full LJ / Coulomb pair
-    nb14_i: torch.Tensor = field(default_factory=lambda: torch.zeros(0, dtype=torch.long))
-    nb14_j: torch.Tensor = field(default_factory=lambda: torch.zeros(0, dtype=torch.long))
+    nb14_i: torch.Tensor = field(
+        default_factory=lambda: torch.zeros(0, dtype=torch.long)
+    )
+    nb14_j: torch.Tensor = field(
+        default_factory=lambda: torch.zeros(0, dtype=torch.long)
+    )
     nb14_lj_factor: torch.Tensor = field(default_factory=lambda: torch.zeros(0))
     nb14_q_factor: torch.Tensor = field(default_factory=lambda: torch.zeros(0))
 
@@ -628,7 +645,9 @@ def _delta_mic(
     Fast path for orthorhombic / cubic cells (diagonal); general cell otherwise.
     """
     cell = cell.to(dtype=pos_i.dtype, device=pos_i.device)
-    if cell.ndim == 2 and bool(torch.allclose(cell, torch.diag(torch.diag(cell)), atol=1e-8)):
+    if cell.ndim == 2 and bool(
+        torch.allclose(cell, torch.diag(torch.diag(cell)), atol=1e-8)
+    ):
         box = torch.diag(cell)
         d = pos_i - pos_j
         return d - box * torch.round(d / box.clamp_min(1e-12))
@@ -698,9 +717,7 @@ def _mm_bonded_energy_forces(
     device = positions.device
     dtype = positions.dtype
     energy = torch.zeros(n_systems, device=device, dtype=dtype)
-    forces = (
-        torch.zeros_like(positions) if compute_forces else None
-    )
+    forces = torch.zeros_like(positions) if compute_forces else None
     ml = topo.ml_mask
 
     def _pos_pair(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -740,7 +757,10 @@ def _mm_bonded_energy_forces(
         if keep.any():
             aidx = topo.angle_idx[keep]
             ai, aj, ak = aidx[:, 0], aidx[:, 1], aidx[:, 2]
-            offs = torch.arange(n_systems, device=device, dtype=torch.long)[:, None] * n_per
+            offs = (
+                torch.arange(n_systems, device=device, dtype=torch.long)[:, None]
+                * n_per
+            )
             Ai = (offs + ai[None, :]).reshape(-1)
             Aj = (offs + aj[None, :]).reshape(-1)
             Ak = (offs + ak[None, :]).reshape(-1)
@@ -762,12 +782,14 @@ def _mm_bonded_energy_forces(
                 dE_dcos = dE_dtheta * (-1.0 / sin_t)
                 inv_n1 = 1.0 / n1
                 inv_n2 = 1.0 / n2
-                dcos_dv1 = v2 * (inv_n1 * inv_n2)[:, None] - cos_t[:, None] * v1 * (
-                    inv_n1 * inv_n1
-                )[:, None]
-                dcos_dv2 = v1 * (inv_n1 * inv_n2)[:, None] - cos_t[:, None] * v2 * (
-                    inv_n2 * inv_n2
-                )[:, None]
+                dcos_dv1 = (
+                    v2 * (inv_n1 * inv_n2)[:, None]
+                    - cos_t[:, None] * v1 * (inv_n1 * inv_n1)[:, None]
+                )
+                dcos_dv2 = (
+                    v1 * (inv_n1 * inv_n2)[:, None]
+                    - cos_t[:, None] * v2 * (inv_n2 * inv_n2)[:, None]
+                )
                 f1 = dE_dcos[:, None] * dcos_dv1
                 f2 = dE_dcos[:, None] * dcos_dv2
                 forces.index_add_(0, Ai, -f1)
@@ -780,7 +802,10 @@ def _mm_bonded_energy_forces(
         if keep.any():
             didx = topo.dihedral_idx[keep]
             da, db, dc, dd = didx[:, 0], didx[:, 1], didx[:, 2], didx[:, 3]
-            offs = torch.arange(n_systems, device=device, dtype=torch.long)[:, None] * n_per
+            offs = (
+                torch.arange(n_systems, device=device, dtype=torch.long)[:, None]
+                * n_per
+            )
             Da = (offs + da[None, :]).reshape(-1)
             Db = (offs + db[None, :]).reshape(-1)
             Dc = (offs + dc[None, :]).reshape(-1)
@@ -1213,9 +1238,7 @@ class MechanicalEmbeddingMLMM(ModelInterface):
                     _spawn_mm_workers=False,
                 )
                 for i, d in enumerate(devs):
-                    w = MechanicalEmbeddingMLMM(
-                        topology, None, device=d, **common
-                    )
+                    w = MechanicalEmbeddingMLMM(topology, None, device=d, **common)
                     self.add_module(f"mm_worker_{i}", w)
                     self._mm_workers.append(w)
                 # Register custom ops on the main thread before any parallel PME.
@@ -1325,7 +1348,11 @@ class MechanicalEmbeddingMLMM(ModelInterface):
         )
 
         # --- MACE on ML subset (may itself be multi-GPU) ---
-        if self.enable_mace and self.mace_model is not None and self._ml_idx.numel() > 0:
+        if (
+            self.enable_mace
+            and self.mace_model is not None
+            and self._ml_idx.numel() > 0
+        ):
             e_m, f_m = self._mace_subset(state)
             energy = energy + e_m
             if forces is not None and f_m is not None:
@@ -1524,9 +1551,7 @@ class MechanicalEmbeddingMLMM(ModelInterface):
         self._mm_shard_cache = cache
         return cache
 
-    def _mm_terms_sharded(
-        self, state
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def _mm_terms_sharded(self, state) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Run classical MM on replica shards across ``self._mm_workers``.
 
         Shards, CUDA streams, and gather buffers are cached. After the first
@@ -1676,13 +1701,19 @@ class MechanicalEmbeddingMLMM(ModelInterface):
         for _ in range(repeats):
             buckets["forward_total"].append(_time(lambda: self.forward(state)))
 
-            if self.enable_mace and self.mace_model is not None and self._ml_idx.numel() > 0:
+            if (
+                self.enable_mace
+                and self.mace_model is not None
+                and self._ml_idx.numel() > 0
+            ):
                 buckets["mace"].append(_time(lambda: self._mace_subset(state)))
             else:
                 buckets["mace"].append(0.0)
 
             if self._mm_workers:
-                buckets["mm_sharded"].append(_time(lambda: self._mm_terms_sharded(state)))
+                buckets["mm_sharded"].append(
+                    _time(lambda: self._mm_terms_sharded(state))
+                )
                 for k in (
                     "neighbor_list",
                     "pme_or_dsf",
@@ -1818,11 +1849,11 @@ class MechanicalEmbeddingMLMM(ModelInterface):
                 unit_shifts=unit_shifts,
             )
         return self._pme_all(
-                state,
-                edge_index=edge_index,
-                mapping=mapping,
-                unit_shifts=unit_shifts,
-            )
+            state,
+            edge_index=edge_index,
+            mapping=mapping,
+            unit_shifts=unit_shifts,
+        )
         return self._pme_all(
             state,
             edge_index=edge_index,

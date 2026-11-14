@@ -32,7 +32,7 @@ class QuadraticDistanceWall(_ModelInterface):
         if _ModelInterface is torch.nn.Module:
             raise ImportError(
                 "torch_sim is required for QuadraticDistanceWall. "
-                "Activate conda env MACE_torchsim."
+                "Install the simulation extra: pip install fp-transformer-torch[simulation]."
             )
         super().__init__()
         if not pairs:
@@ -140,7 +140,7 @@ class QuadraticDistanceLowerWall(_ModelInterface):
         if _ModelInterface is torch.nn.Module:
             raise ImportError(
                 "torch_sim is required for QuadraticDistanceLowerWall. "
-                "Activate conda env MACE_torchsim."
+                "Install the simulation extra: pip install fp-transformer-torch[simulation]."
             )
         super().__init__()
         if not pairs:
@@ -254,7 +254,7 @@ class SoftminDistanceUpperWall(_ModelInterface):
         if _ModelInterface is torch.nn.Module:
             raise ImportError(
                 "torch_sim is required for SoftminDistanceUpperWall. "
-                "Activate conda env MACE_torchsim."
+                "Install the simulation extra: pip install fp-transformer-torch[simulation]."
             )
         super().__init__()
         p1 = tuple(int(x) for x in pair1)
@@ -333,9 +333,10 @@ class SoftminDistanceUpperWall(_ModelInterface):
         d1 = torch.linalg.norm(coordinate[:, i1, :] - coordinate[:, j1, :], dim=-1)
         d2 = torch.linalg.norm(coordinate[:, i2, :] - coordinate[:, j2, :], dim=-1)
         # softmin via logsumexp for numerical stability
-        d_softmin = -torch.logsumexp(
-            torch.stack((-self.a * d1, -self.a * d2), dim=-1), dim=-1
-        ) / self.a
+        d_softmin = (
+            -torch.logsumexp(torch.stack((-self.a * d1, -self.a * d2), dim=-1), dim=-1)
+            / self.a
+        )
         excess = torch.relu(d_softmin - self.d_wall)
         energy = 0.5 * self.k * excess * excess
 

@@ -5,12 +5,10 @@ __all__ = ["BaoabFokkerPlanckIntegrator", "SamplerState"]
 
 try:
     from .torch_sim import FPTBias, TorchSimFokkerPlanckIntegrator
-    from .sharded_baoab import ShardedBaoabFokkerPlanckIntegrator
 
     __all__ += [
         "FPTBias",
         "TorchSimFokkerPlanckIntegrator",
-        "ShardedBaoabFokkerPlanckIntegrator",
     ]
 except ImportError:  # pragma: no cover — torch_sim optional
     pass

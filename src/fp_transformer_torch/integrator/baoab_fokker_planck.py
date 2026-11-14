@@ -1,10 +1,12 @@
-"""BAOAB + Fokker–Planck pullback with λ annealing (no replica resampling)."""
+"""BAOAB + Fokker–Planck pullback with prescribed healing and fixed production λ."""
 
 from __future__ import annotations
 
 import sys
 import time
 from typing import Any, Callable, Optional
+
+from .protocol import validate_lambda, run_fixed_protocol
 
 import numpy as np
 import torch
@@ -21,7 +23,7 @@ except ImportError:  # pragma: no cover
 
 
 class BaoabFokkerPlanckIntegrator:
-    """BAOAB Langevin with FP Gaussian-kernel force and λ annealing.
+    """BAOAB Langevin with FP Gaussian-kernel force and fixed production λ.
 
     Thermal bath uses fixed ``beta0``. FP pullback is scaled by
     ``kernel_grad_beta``:
@@ -29,8 +31,6 @@ class BaoabFokkerPlanckIntegrator:
     - ``"lambda"`` (default): ``λ · β0``  →  force ``F / λ``
     - ``"lambda_over_one_plus_lambda"``: ``λ/(1+λ) · β0``  →  force ``F(1+λ)/λ``
 
-    Unlike the JAX ``BAOABFPReweightAnneal.anneal_step``, ``advance_lambda``
-    updates λ only and **does not** systematically resample replicas.
     """
 
     def __init__(
@@ -42,12 +42,7 @@ class BaoabFokkerPlanckIntegrator:
         timestep: float,
         langevin_friction: float,
         beta0: float,
-        lambda_init: float,
-        lambda_max: float,
-        ess_threshold: float,
-        min_lambda_step: float,
-        max_lambda_step: float,
-        num_lambda_trials: int,
+        production_lambda: float,
         mass: float | torch.Tensor = 1.0,
         boltzmann_constant: float = 1.0,
         update_pace: int = 20,
@@ -65,12 +60,7 @@ class BaoabFokkerPlanckIntegrator:
         self.langevin_friction = float(langevin_friction)
         self.beta0 = float(beta0)
         self.boltzmann_constant = float(boltzmann_constant)
-        self.lambda_init = float(lambda_init)
-        self.lambda_max = float(lambda_max)
-        self.ess_threshold = float(ess_threshold)
-        self.min_lambda_step = float(min_lambda_step)
-        self.max_lambda_step = float(max_lambda_step)
-        self.num_lambda_trials = max(2, int(num_lambda_trials))
+        self.production_lambda = validate_lambda(production_lambda)
         self.update_pace = max(1, int(update_pace))
         self.use_kernel_gradient = bool(use_kernel_gradient)
         self.collective_variable_grad_clip = collective_variable_grad_clip
@@ -98,7 +88,7 @@ class BaoabFokkerPlanckIntegrator:
             )
         self.kernel_grad_beta_mode = aliases[mode]
 
-        self.lambda_current = self.lambda_init
+        self.lambda_current = self.production_lambda
         self.kernel_grad_beta = 0.0
         self.sync_lambda_to_kernel_grad_beta()
         self._density_cache: dict[str, Any] = {}
@@ -180,9 +170,7 @@ class BaoabFokkerPlanckIntegrator:
         max_norm = self.collective_variable_grad_clip
         stats: dict[str, float] = {
             "cv_grad_norm": float(norm.item()),
-            "cv_grad_clip": (
-                float(max_norm) if max_norm is not None else float("nan")
-            ),
+            "cv_grad_clip": (float(max_norm) if max_norm is not None else float("nan")),
         }
         if max_norm is None:
             stats["cv_grad_norm_post"] = stats["cv_grad_norm"]
@@ -196,9 +184,7 @@ class BaoabFokkerPlanckIntegrator:
         )
         out = gradient * scale
         stats["cv_grad_scale"] = float(scale.item())
-        stats["cv_grad_norm_post"] = float(
-            (torch.linalg.norm(out) / denom).item()
-        )
+        stats["cv_grad_norm_post"] = float((torch.linalg.norm(out) / denom).item())
         self._last_cv_grad_stats = stats
         return out
 
@@ -210,9 +196,7 @@ class BaoabFokkerPlanckIntegrator:
         kernel_grad_beta: float,
     ) -> torch.Tensor:
         """``G = ∇U/β + pullback(∇_s log-kernel) / kernel_grad_beta``."""
-        system_grad_times_beta = self.energy_system.potential_gradient(
-            coordinate, beta
-        )
+        system_grad_times_beta = self.energy_system.potential_gradient(coordinate, beta)
         base = system_grad_times_beta / beta
         if not self.use_kernel_gradient:
             return base
@@ -235,9 +219,7 @@ class BaoabFokkerPlanckIntegrator:
         spatial_dim = float(momentum.shape[-1])
         num_atoms = float(momentum.shape[-2])
         degrees_of_freedom = spatial_dim * num_atoms
-        return (2.0 * kinetic_energy) / (
-            degrees_of_freedom * self.boltzmann_constant
-        )
+        return (2.0 * kinetic_energy) / (degrees_of_freedom * self.boltzmann_constant)
 
     def step(
         self,
@@ -415,7 +397,9 @@ class BaoabFokkerPlanckIntegrator:
                             )
                             + (
                                 f" clip={metrics['cv_grad_clip']:.4g}"
-                                if np.isfinite(metrics.get("cv_grad_clip", float("nan")))
+                                if np.isfinite(
+                                    metrics.get("cv_grad_clip", float("nan"))
+                                )
                                 else " clip=off"
                             )
                             + f" scale={metrics.get('cv_grad_scale', 1.0):.3g}"
@@ -450,9 +434,7 @@ class BaoabFokkerPlanckIntegrator:
         kernel_matrix = self.gaussian_kernel.kernel_matrix(collective, bandwidth)
         row_sum = torch.sum(kernel_matrix, dim=-1)
         batch = int(collective.shape[0])
-        log_density = torch.log(
-            row_sum / float(batch) + self.log_density_epsilon
-        )
+        log_density = torch.log(row_sum / float(batch) + self.log_density_epsilon)
         log_density_np = log_density.detach().cpu().numpy().astype(np.float64)
 
         def log_density_fn(points: np.ndarray) -> np.ndarray:
@@ -470,233 +452,41 @@ class BaoabFokkerPlanckIntegrator:
         self._density_cache = info
         return info
 
-    @staticmethod
-    def compute_ess(weights: np.ndarray) -> float:
-        weights = np.asarray(weights, dtype=np.float64).reshape(-1)
-        total = float(np.sum(weights))
-        if total <= 0.0:
-            return 0.0
-        sum_squares = float(np.sum(weights * weights))
-        if sum_squares <= 0.0:
-            return 0.0
-        return (total * total) / sum_squares
-
-    @staticmethod
-    def compute_reweight_weights(
-        collective_variable_values: np.ndarray,
-        density_info: dict[str, Any],
-        lambda_current: float,
-        lambda_next: float,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        log_density = density_info["log_density_fn"](
-            np.asarray(collective_variable_values, dtype=np.float64)
-        )
-        eta = (lambda_next - lambda_current) / (
-            lambda_current * (1.0 + lambda_next)
-        )
-        log_weights = eta * log_density
-        log_weights = log_weights - np.max(log_weights)
-        unnormalized = np.exp(log_weights)
-        normalized = unnormalized / np.sum(unnormalized)
-        return unnormalized, normalized
-
-    def choose_next_lambda(
-        self,
-        collective_variable_values: np.ndarray,
-        density_info: dict[str, Any],
-        lambda_current: float,
-    ) -> float:
-        low = lambda_current + self.min_lambda_step
-        high = min(self.lambda_max, lambda_current + self.max_lambda_step)
-        if low >= high - 1e-15:
-            return min(lambda_current + self.min_lambda_step, self.lambda_max)
-        trials = np.linspace(low, high, self.num_lambda_trials)
-        batch = int(np.asarray(collective_variable_values).shape[0])
-        chosen = lambda_current
-        for candidate in trials:
-            unnormalized, _ = self.compute_reweight_weights(
-                collective_variable_values,
-                density_info,
-                lambda_current,
-                float(candidate),
-            )
-            ess_ratio = self.compute_ess(unnormalized) / float(batch)
-            if ess_ratio >= self.ess_threshold:
-                chosen = float(candidate)
-        if chosen <= lambda_current + 1e-15:
-            # fall back to smallest trial that is still above lambda_current
-            chosen = float(trials[0])
-        return min(chosen, self.lambda_max)
-
-    def advance_lambda(
-        self,
-        state: SamplerState,
-        collective_variable_values: np.ndarray,
-        density_info: dict[str, Any],
-        lambda_current: float,
-        lambda_next: float,
-    ) -> tuple[SamplerState, np.ndarray, np.ndarray]:
-        """Update λ / kernel_grad_beta; keep coordinates and momenta unchanged."""
-        unnormalized, normalized = self.compute_reweight_weights(
-            collective_variable_values,
-            density_info,
-            lambda_current,
-            lambda_next,
-        )
-        self.lambda_current = float(lambda_next)
-        self.sync_lambda_to_kernel_grad_beta()
-        return state, unnormalized, normalized
-
     def run(
         self,
-        stage_steps: int,
+        production_steps: int,
         *,
-        initial_state: SamplerState | None = None,
-        seed: int = 0,
-        verbose: bool = False,
-        verbose_pace: int = 100,
-        show_progress: bool = True,
-        on_lambda_change: Optional[Callable[..., Any]] = None,
-        on_stage_end: Optional[Callable[..., Any]] = None,
-        heal_lambdas: Optional[list[float] | tuple[float, ...]] = None,
-        heal_steps: int | None = None,
-        max_stages: int | None = None,
-        max_runtime_sec: float | None = None,
-    ) -> SamplerState:
-        """Optional λ-heal warmup, then ESS-based λ annealing from ``lambda_init``.
+        initial_state=None,
+        seed=0,
+        dump_every=100,
+        heal_lambdas=None,
+        heal_steps=None,
+        on_frame=None,
+        verbose=False,
+        verbose_pace=100,
+        show_progress=True,
+    ):
+        """Prescribed healing followed by fixed-lambda production; no reweighting."""
+        state = (
+            initial_state if initial_state is not None else self.init_state(seed=seed)
+        )
 
-        ``max_stages`` / ``max_runtime_sec`` stop the anneal loop early (heal
-        time is included in the runtime budget).
-        """
-        state = initial_state or self.init_state(seed=seed)
-        t_run0 = time.perf_counter()
-
-        def _runtime_exceeded() -> bool:
-            if max_runtime_sec is None:
-                return False
-            return (time.perf_counter() - t_run0) >= float(max_runtime_sec)
-
-        def _call_stage_end(stage_i: int, lam: float, st: SamplerState, *, phase: str) -> None:
-            if on_stage_end is None:
-                return
-            try:
-                on_stage_end(stage_i, float(lam), st, phase=phase)
-            except TypeError:
-                on_stage_end(stage_i, float(lam), st)
-
-        if heal_lambdas:
-            heal_list = [float(x) for x in heal_lambdas]
-            n_heal = int(heal_steps) if heal_steps is not None else int(stage_steps)
-            if n_heal <= 0:
-                raise ValueError(f"heal_steps must be > 0, got {n_heal}")
-            if verbose:
-                print(
-                    f"[BaoabFokkerPlanck] heal: {len(heal_list)} λ values "
-                    f"{heal_list} × {n_heal} steps each",
-                    flush=True,
-                )
-            for heal_i, lam in enumerate(heal_list):
-                if _runtime_exceeded():
-                    if verbose:
-                        print(
-                            "[BaoabFokkerPlanck] max_runtime_sec reached during heal",
-                            flush=True,
-                        )
-                    return state
-                self.lambda_current = float(lam)
-                self.sync_lambda_to_kernel_grad_beta()
-                if verbose:
-                    print(
-                        f"[BaoabFokkerPlanck] heal {heal_i}: "
-                        f"{n_heal} steps at lambda={self.lambda_current:.8g}",
-                        flush=True,
-                    )
-                state = self.run_stage(
-                    n_heal,
-                    initial_state=state,
-                    verbose=verbose,
-                    verbose_pace=verbose_pace,
-                    show_progress=show_progress,
-                )
-                _call_stage_end(
-                    heal_i, float(self.lambda_current), state, phase="heal"
-                )
-
-        self.lambda_current = float(self.lambda_init)
-        self.sync_lambda_to_kernel_grad_beta()
-        stage_index = 0
-        if verbose:
-            print(
-                f"[BaoabFokkerPlanck] anneal: start λ={self.lambda_current:.8g} "
-                f"→ max={self.lambda_max:.8g}, {stage_steps} steps/stage",
-                flush=True,
-            )
-        while self.lambda_current < self.lambda_max - 1e-12:
-            if max_stages is not None and stage_index >= int(max_stages):
-                if verbose:
-                    print(
-                        f"[BaoabFokkerPlanck] max_stages={max_stages} reached",
-                        flush=True,
-                    )
-                break
-            if _runtime_exceeded():
-                if verbose:
-                    print(
-                        "[BaoabFokkerPlanck] max_runtime_sec reached during anneal",
-                        flush=True,
-                    )
-                break
-            if verbose:
-                print(
-                    f"[BaoabFokkerPlanck] anneal stage {stage_index}: "
-                    f"{stage_steps} steps at lambda={self.lambda_current:.8g}",
-                    flush=True,
-                )
-            state = self.run_stage(
-                int(stage_steps),
-                initial_state=state,
+        def advance(st, steps):
+            return self.run_stage(
+                steps,
+                initial_state=st,
                 verbose=verbose,
                 verbose_pace=verbose_pace,
                 show_progress=show_progress,
             )
-            _call_stage_end(
-                stage_index, float(self.lambda_current), state, phase="anneal"
-            )
-            density_info = self.estimate_collective_variable_density(state.coordinate)
-            collective_np = (
-                self.collective_variable(state.coordinate).detach().cpu().numpy()
-            )
-            lambda_k = float(self.lambda_current)
-            lambda_next = float(
-                self.choose_next_lambda(collective_np, density_info, lambda_k)
-            )
-            if lambda_next <= lambda_k + 1e-15:
-                if verbose:
-                    print(
-                        f"[BaoabFokkerPlanck] cannot increase lambda beyond {lambda_k}",
-                        flush=True,
-                    )
-                break
-            state_before = state
-            state, unnormalized, normalized = self.advance_lambda(
-                state, collective_np, density_info, lambda_k, lambda_next
-            )
-            if verbose:
-                print(
-                    f"[BaoabFokkerPlanck] lambda {lambda_k:.8g} → {lambda_next:.8g} "
-                    f"(ESS/N={self.compute_ess(unnormalized) / collective_np.shape[0]:.4g})",
-                    flush=True,
-                )
-            if on_lambda_change is not None:
-                on_lambda_change(
-                    lambda_k,
-                    lambda_next,
-                    state,
-                    density_info,
-                    stage_index,
-                    state_before_advance=state_before,
-                    unnormalized_weights=unnormalized,
-                    normalized_weights=normalized,
-                )
-            stage_index += 1
-        return state
+
+        return run_fixed_protocol(
+            self,
+            state,
+            advance,
+            production_steps,
+            dump_every,
+            heal_lambdas,
+            heal_steps,
+            on_frame,
+        )

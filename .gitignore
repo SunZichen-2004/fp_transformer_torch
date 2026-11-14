@@ -1,50 +1,13 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-.eggs/
-dist/
-build/
 .pytest_cache/
 .ruff_cache/
+build/
+dist/
 .venv/
-.DS_Store
-Untitled
-
-# Binary dumps by default (trajectories, hills, FES caches, …)
-*.npy
 *.npz
+*.npy
 *.png
 *.pdf
-*.tar.gz
-*.gif
-
-# Run outputs
-experiments/**/results/
-experiments/**/meta_snaps/
-experiments/**/live/
-**/remd_*/
-
-# Keep necessary initial coordinates / US starts (not under results/)
-!experiments/**/init_coords*.npy
-!experiments/**/init_us*.npy
-!experiments/**/init_us*.npz
-experiments/**/results/**
-
-# Keep box topology needed to relaunch water / MLMM runs
-!experiments/**/mm_box/topology.npz
-!experiments/**/mlmm_box/topology.npz
-!experiments/**/mlmm_box_test/topology.npz
-
-# Trajectories (explicit; also covered by *.npy / *.xyz)
-**/trajectory.xyz
-**/trajectory_*.npy
-**/pre_md_traj.npy
-**/*_traj.npy
-**/md_traj_*.npy
-
-# SLURM job logs (keep *.slurm submit scripts)
-*.out
-*.err
-parity_smoke_*.log
-*.bak
 *.log

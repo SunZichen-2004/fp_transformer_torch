@@ -19,7 +19,9 @@ def test_cubic_bspline_weights_partition_of_unity():
     u = torch.linspace(0.0, 1.0, 21, dtype=torch.float64)[:-1]
     w = cubic_bspline_weights(u)
     assert w.shape == (20, 4)
-    torch.testing.assert_close(w.sum(dim=-1), torch.ones(20, dtype=torch.float64), atol=1e-12, rtol=0.0)
+    torch.testing.assert_close(
+        w.sum(dim=-1), torch.ones(20, dtype=torch.float64), atol=1e-12, rtol=0.0
+    )
 
 
 def test_bspline_interpolates_nodal_samples_1d():
@@ -29,9 +31,7 @@ def test_bspline_interpolates_nodal_samples_1d():
     ax = origin[0] + torch.arange(n, dtype=torch.float64) * (period[0] / n)
     samples = torch.cos(2.0 * ax) + 0.3 * torch.sin(ax)
     coeffs = periodic_cubic_bspline_coeffs(samples)
-    got = periodic_bspline_eval(
-        coeffs, ax.unsqueeze(-1), origin=origin, period=period
-    )
+    got = periodic_bspline_eval(coeffs, ax.unsqueeze(-1), origin=origin, period=period)
     torch.testing.assert_close(got, samples, atol=1e-9, rtol=1e-9)
 
 

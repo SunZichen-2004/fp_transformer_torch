@@ -53,7 +53,7 @@ class GaffTorchSimModel(_ModelInterface):
     ):
         if _ModelInterface is torch.nn.Module:
             raise ImportError(
-                "torch_sim is required. Activate conda env MACE_torchsim."
+                "torch_sim is required. Install the simulation extra: pip install fp-transformer-torch[simulation]."
             )
         super().__init__()
         self._device = torch.device(device)

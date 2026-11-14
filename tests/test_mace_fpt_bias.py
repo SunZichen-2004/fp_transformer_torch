@@ -9,7 +9,9 @@ import pytest
 import torch
 
 SPONGE = Path(__file__).resolve().parents[1] / "experiments" / "dialanine" / "dialanine"
-PDB = Path(__file__).resolve().parents[1] / "experiments" / "dialanine" / "dialanine.pdb"
+PDB = (
+    Path(__file__).resolve().parents[1] / "experiments" / "dialanine" / "dialanine.pdb"
+)
 CACHE = Path.home() / ".cache" / "mace" / "MACE-OFF23_small.model"
 TORSION = np.array([[5, 7, 9, 15], [7, 9, 15, 17]], dtype=np.int64)
 
@@ -43,7 +45,9 @@ def test_mace_fpt_bias_sum_model_cpu():
     device = torch.device("cpu")
     dtype = torch.float64
     base = load_sponge_coordinates(SPONGE, num_atoms=22)
-    coords = torch.as_tensor(base, dtype=dtype, device=device).unsqueeze(0).repeat(2, 1, 1)
+    coords = (
+        torch.as_tensor(base, dtype=dtype, device=device).unsqueeze(0).repeat(2, 1, 1)
+    )
     z = atomic_numbers_from_pdb_organic(PDB)
     assert int((z == 20).sum()) == 0  # no bogus Ca from ASE "CA"
     mass = torch.ones(22, dtype=dtype)

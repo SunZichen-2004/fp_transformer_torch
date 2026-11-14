@@ -6,6 +6,8 @@ import math
 
 import numpy as np
 import pytest
+
+pytest.importorskip("torch_sim")
 import torch
 
 from fp_transformer_torch.potential.mechanical_embedding_MLMM import (
@@ -413,7 +415,9 @@ def test_torchpme_batched_replicas_match(water_dimer):
     state2 = _repeat_state(state, 2, topo)
     out2 = model(state2)
     assert out2["energy"].shape == (2,)
-    assert torch.allclose(out2["energy"], out1["energy"].expand(2), atol=1e-6, rtol=1e-5)
+    assert torch.allclose(
+        out2["energy"], out1["energy"].expand(2), atol=1e-6, rtol=1e-5
+    )
     f1 = out1["forces"]
     f2 = out2["forces"].view(2, -1, 3)
     assert torch.allclose(f2[0], f1, atol=1e-5, rtol=1e-5)
@@ -460,7 +464,9 @@ def test_torchpme_batched_matches_native_calculator(water_dimer):
     e_ref = []
     f_ref = []
     for b in range(n_rep):
-        pos = state_b.positions[b * n_per : (b + 1) * n_per].detach().requires_grad_(True)
+        pos = (
+            state_b.positions[b * n_per : (b + 1) * n_per].detach().requires_grad_(True)
+        )
         system_idx = torch.zeros(n_per, dtype=torch.long)
         edge_index, _, unit_shifts = warp_free_neighbor_list(
             pos.detach(),
@@ -474,7 +480,12 @@ def test_torchpme_batched_matches_native_calculator(water_dimer):
         from fp_transformer_torch.potential.torch_pme_model import _pair_distances
 
         dist = _pair_distances(
-            pos, edge_index[0], edge_index[1], unit_shifts, cell, ortho_box=torch.diag(cell)
+            pos,
+            edge_index[0],
+            edge_index[1],
+            unit_shifts,
+            cell,
+            ortho_box=torch.diag(cell),
         )
         V = calc(q1, cell, pos, edge_index.t().contiguous(), dist, periodic)
         e = (q1 * V).sum()
@@ -533,11 +544,7 @@ def test_torchpme_shard_matches_single_gpu(water_dimer):
     z = state.atomic_numbers.to(device0).repeat(n_rep)
     n_per = int(state.positions.shape[0])
     system_idx = torch.arange(n_rep, device=device0).repeat_interleave(n_per)
-    cell = (
-        state.row_vector_cell.to(device0)
-        .expand(n_rep, 3, 3)
-        .contiguous()
-    )
+    cell = state.row_vector_cell.to(device0).expand(n_rep, 3, 3).contiguous()
     batched = ts.SimState(
         positions=pos,
         masses=mass,
@@ -569,84 +576,13 @@ def test_torchpme_shard_matches_single_gpu(water_dimer):
     assert torch.allclose(out_s["forces"], out_m["forces"], atol=1e-5, rtol=1e-5)
 
 
-def test_compact_torsion_matches_full_molecule():
-    from fp_transformer_torch.collective_variable.torsion import Torsion
-    from fp_transformer_torch.integrator.sharded_baoab import compact_torsion, cv_atom_indices
-
-    idx = torch.tensor([[4, 6, 8, 14], [6, 8, 14, 16]], dtype=torch.long)
-    cv = Torsion(idx)
-    cv_idx = cv_atom_indices(cv)
-    compact = compact_torsion(cv, cv_idx)
-    pos = torch.randn(5, 22, 3, dtype=torch.float64)
-    full = cv(pos)
-    sub = compact(pos[:, cv_idx, :])
-    assert torch.allclose(full, sub, atol=1e-10, rtol=1e-10)
-
-
-def test_wrap_to_box_keeps_centered_solute_intact():
-    from fp_transformer_torch.collective_variable.torsion import Torsion
-    from fp_transformer_torch.integrator.sharded_baoab import (
-        compact_torsion,
-        cv_atom_indices,
-        unwrap_to_ref,
-        wrap_to_box,
-    )
-
-    box = torch.tensor([18.0, 18.0, 18.0], dtype=torch.float64)
-    idx = torch.tensor([[4, 6, 8, 14], [6, 8, 14, 16]], dtype=torch.long)
-    cv = Torsion(idx)
-    compact = compact_torsion(cv, cv_atom_indices(cv))
-    pos = torch.zeros(1, 22, 3, dtype=torch.float64)
-    pos[0] = torch.tensor([9.0, 8.2, 8.6])
-    pos[0, 4] = torch.tensor([7.2, 9.1, 7.4])
-    pos[0, 6] = torch.tensor([8.4, 8.0, 8.8])
-    pos[0, 8] = torch.tensor([9.7, 7.2, 9.5])
-    pos[0, 14] = torch.tensor([10.8, 8.6, 10.1])
-    pos[0, 16] = torch.tensor([11.4, 9.8, 9.0])
-    cv_idx = cv_atom_indices(cv)
-    expected = compact(pos[:, cv_idx, :])
-    assert expected.abs().max() > 0.2
-
-    round_wrapped = pos - box * torch.round(pos / box)
-    assert (round_wrapped[:, cv_idx, 0] < 0).any()
-    assert not torch.allclose(compact(round_wrapped[:, cv_idx, :]), expected, atol=1e-5)
-
-    wrapped = wrap_to_box(pos, box)
-    assert torch.allclose(wrapped, pos)
-    assert torch.allclose(compact(wrapped[:, cv_idx, :]), expected, atol=1e-10)
-
-    split = wrap_to_box(pos + torch.tensor([10.0, 0.0, 0.0]), box)
-    assert (split[:, cv_idx, 0] < 5).any() and (split[:, cv_idx, 0] > 13).any()
-    recovered = unwrap_to_ref(split[:, cv_idx, :], box)
-    assert torch.allclose(compact(recovered), expected, atol=1e-10)
-
-
-def test_compact_torsion_pullback_matches_full():
-    from fp_transformer_torch.collective_variable.torsion import Torsion
-    from fp_transformer_torch.integrator.sharded_baoab import compact_torsion, cv_atom_indices
-    from fp_transformer_torch.math.pullback import pullback_collective_variable_gradient
-
-    idx = torch.tensor([[4, 6, 8, 14], [6, 8, 14, 16]], dtype=torch.long)
-    cv = Torsion(idx)
-    cv_idx = cv_atom_indices(cv)
-    compact = compact_torsion(cv, cv_idx)
-    pos = torch.randn(8, 22, 3, dtype=torch.float64)
-    pos_full = pos.detach().requires_grad_(True)
-    pos_sub = pos[:, cv_idx, :].detach().requires_grad_(True)
-    cot = torch.randn(8, 2, 1, dtype=torch.float64)
-    g_full = pullback_collective_variable_gradient(pos_full, cv, cot)
-    g_sub = pullback_collective_variable_gradient(pos_sub, compact, cot)
-    assert torch.allclose(g_full[:, cv_idx, :], g_sub, atol=1e-10, rtol=1e-10)
-    mask = torch.ones(22, dtype=torch.bool)
-    mask[cv_idx] = False
-    assert torch.allclose(g_full[:, mask, :], torch.zeros_like(g_full[:, mask, :]))
-
-
 def test_cv_force_index_add_writes_back():
     """Advanced-index add_ is a no-op; index_add_ must land on the source tensor."""
     n_local, n_per, n_cv = 3, 10, 2
     forces = torch.zeros(n_local * n_per, 3)
-    extra = torch.arange(n_local * n_cv * 3, dtype=torch.float32).reshape(n_local, n_cv, 3)
+    extra = torch.arange(n_local * n_cv * 3, dtype=torch.float32).reshape(
+        n_local, n_cv, 3
+    )
     idx = torch.tensor([1, 4])
     view = forces.view(n_local, n_per, 3)
     lost = view.clone()

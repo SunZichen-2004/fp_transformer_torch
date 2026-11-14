@@ -230,7 +230,9 @@ class ShardedMaceModel(_ModelInterface):
         if len(active) == 1:
             (lo, hi), model, _dev = active[0]
             assert lo == 0 and hi == n_systems
-            out = model(state if state.device == model.device else state.to(model.device))
+            out = model(
+                state if state.device == model.device else state.to(model.device)
+            )
             energy = out["energy"].to(device=self._device, dtype=self._dtype)
             forces = out["forces"].to(device=self._device, dtype=self._dtype)
             result = {"energy": energy, "forces": forces}
@@ -270,7 +272,8 @@ class ShardedMaceModel(_ModelInterface):
         }
         if self._compute_stress and all("stress" in o for o in shard_outs):
             stresses = [
-                o["stress"].to(device=self._device, dtype=self._dtype) for o in shard_outs
+                o["stress"].to(device=self._device, dtype=self._dtype)
+                for o in shard_outs
             ]
             result["stress"] = torch.cat(stresses, dim=0)
         return result

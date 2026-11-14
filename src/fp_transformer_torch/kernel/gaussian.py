@@ -46,7 +46,7 @@ class PerReplicaRescaleConfig:
 
 
 class GaussianKernel:
-    """Non-RFF Gaussian kernel with optional per-replica bandwidth rescale."""
+    """Gaussian kernel with the joint replica gradient used by the paper."""
 
     def __init__(
         self,
@@ -70,7 +70,9 @@ class GaussianKernel:
         if bandwidth_tensor.ndim == 0:
             bandwidth_tensor = bandwidth_tensor.expand(self.num_replicas).clone()
         elif bandwidth_tensor.numel() == 1:
-            bandwidth_tensor = bandwidth_tensor.reshape(()).expand(self.num_replicas).clone()
+            bandwidth_tensor = (
+                bandwidth_tensor.reshape(()).expand(self.num_replicas).clone()
+            )
         else:
             bandwidth_tensor = bandwidth_tensor.reshape(-1).to(
                 device=self.device, dtype=dtype
@@ -186,14 +188,14 @@ class GaussianKernel:
         bandwidth = self.bandwidth.clone()
         batch = int(collective_variable.shape[0])
         if batch != self.num_replicas:
-            raise ValueError(
-                f"CV batch {batch} != num_replicas {self.num_replicas}"
-            )
+            raise ValueError(f"CV batch {batch} != num_replicas {self.num_replicas}")
 
         if not cfg.enabled:
             metric = self._rescale_metric(collective_variable, bandwidth)
             mean_m = float(metric.mean().item())
-            target = float(torch.quantile(metric, 0.5).item()) if metric.numel() else 1.0
+            target = (
+                float(torch.quantile(metric, 0.5).item()) if metric.numel() else 1.0
+            )
             if mean_m > 0 and target > 0:
                 factor = (target / mean_m) ** 0.5
                 bandwidth = torch.clamp(
@@ -260,7 +262,9 @@ class GaussianKernel:
             log_bandwidth = log_bandwidth + cfg.log_step_size * err
             log_bandwidth = torch.clamp(log_bandwidth, min=log_bw_min, max=log_bw_max)
             if pull != 0.0:
-                log_bandwidth = (1.0 - pull) * log_bandwidth + pull * log_bandwidth.mean()
+                log_bandwidth = (
+                    1.0 - pull
+                ) * log_bandwidth + pull * log_bandwidth.mean()
             log_bandwidth = torch.clamp(log_bandwidth, min=log_bw_min, max=log_bw_max)
             bandwidth = torch.exp(log_bandwidth)
             bandwidth = torch.clamp(bandwidth, min=bw_min, max=bw_max)

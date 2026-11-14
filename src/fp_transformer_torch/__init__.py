@@ -19,8 +19,6 @@ from .potential import (
     KCAL_PER_MOL_TO_EV,
     MACE_MODELS,
     MacePotential,
-    MechanicalEmbeddingMLMM,
-    MLMMTopology,
     ParticleDimer,
     ParticleDimerParams,
     ShardedMaceModel,
@@ -59,12 +57,11 @@ __all__ = [
 ]
 
 try:
-    from .integrator import FPTBias, TorchSimFokkerPlanckIntegrator, ShardedBaoabFokkerPlanckIntegrator
+    from .integrator import FPTBias, TorchSimFokkerPlanckIntegrator
 
     __all__ += [
         "FPTBias",
         "TorchSimFokkerPlanckIntegrator",
-        "ShardedBaoabFokkerPlanckIntegrator",
     ]
 except ImportError:  # pragma: no cover
     pass
@@ -105,4 +102,13 @@ try:
 except ImportError:  # pragma: no cover
     pass
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+
+try:
+    from .potential import MechanicalEmbeddingMLMM, MLMMTopology
+except ImportError:
+    __all__ = [
+        name
+        for name in __all__
+        if name not in {"MechanicalEmbeddingMLMM", "MLMMTopology"}
+    ]
