@@ -51,7 +51,9 @@ def periodic_bspline_eval(
     """
     nd = int(coeffs.ndim)
     if s.ndim != 2 or int(s.shape[-1]) != nd:
-        raise ValueError(f"s shape {tuple(s.shape)} incompatible with coeffs {tuple(coeffs.shape)}")
+        raise ValueError(
+            f"s shape {tuple(s.shape)} incompatible with coeffs {tuple(coeffs.shape)}"
+        )
     if nd < 1 or nd > 3:
         raise ValueError(f"B-spline eval supports 1–3 D, got nd={nd}")
     four = torch.arange(-1, 3, device=s.device)

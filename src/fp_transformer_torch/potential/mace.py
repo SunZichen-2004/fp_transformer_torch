@@ -66,6 +66,7 @@ def atomic_numbers_from_pdb_organic(path: Path | str) -> torch.Tensor:
         raise ValueError(f"no ATOM/HETATM records in {path}")
     return torch.as_tensor(zs, dtype=torch.long)
 
+
 MACE_MODELS: dict[str, dict[str, Any]] = {
     "off-small": {
         "path": DEFAULT_MACE_CACHE / "MACE-OFF23_small.model",
@@ -120,8 +121,7 @@ def resolve_mace_checkpoint(
             path = cache / path.name
         if not path.is_file():
             raise FileNotFoundError(
-                f"MACE checkpoint missing for '{key}': {path}. "
-                f"Expected under {cache}."
+                f"MACE checkpoint missing for '{key}': {path}. Expected under {cache}."
             )
         return path, meta["head"]
 
@@ -129,7 +129,9 @@ def resolve_mace_checkpoint(
     if not path.is_file():
         raise FileNotFoundError(f"MACE checkpoint not found: {path}")
     # Infer head for mh-0 style filenames.
-    head = "omol" if "mh0" in path.name.lower().replace("-", "").replace("_", "") else None
+    head = (
+        "omol" if "mh0" in path.name.lower().replace("-", "").replace("_", "") else None
+    )
     return path, head
 
 
@@ -157,14 +159,12 @@ def load_mace_torch_sim_model(
         from torch_sim.models.mace import MaceModel
     except ImportError as exc:  # pragma: no cover
         raise ImportError(
-            "torch_sim / mace are required. Activate conda env MACE_torchsim."
+            "torch_sim / mace are required. Install the simulation extra: pip install fp-transformer-torch[simulation]."
         ) from exc
 
     path, default_head = resolve_mace_checkpoint(model, cache_dir=cache_dir)
     resolved_head = default_head if head is ... else head
-    device = torch.device(
-        device or ("cuda" if torch.cuda.is_available() else "cpu")
-    )
+    device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
     raw = torch.load(str(path), map_location=device, weights_only=False)
     return MaceModel(
@@ -232,7 +232,9 @@ def batched_coordinates_to_sim_state(
     if isinstance(charge, (int, float)):
         total_charge = torch.full((batch,), float(charge), device=device, dtype=dtype)
     else:
-        total_charge = torch.as_tensor(charge, device=device, dtype=dtype).reshape(batch)
+        total_charge = torch.as_tensor(charge, device=device, dtype=dtype).reshape(
+            batch
+        )
 
     if isinstance(spin, (int, float)):
         total_spin = torch.full((batch,), float(spin), device=device, dtype=dtype)

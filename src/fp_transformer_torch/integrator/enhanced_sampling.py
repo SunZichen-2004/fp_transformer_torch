@@ -68,7 +68,7 @@ class _BiasModelBase(_ModelInterface):
     ):
         if _ModelInterface is torch.nn.Module:
             raise ImportError(
-                "torch_sim is required. Activate conda env MACE_torchsim."
+                "torch_sim is required. Install the simulation extra: pip install fp-transformer-torch[simulation]."
             )
         super().__init__()
         self._device = torch.device(device)
@@ -139,7 +139,9 @@ class UmbrellaBias(_BiasModelBase):
         if centers_t.ndim == 1:
             centers_t = centers_t.unsqueeze(0)
         if centers_t.ndim != 2:
-            raise ValueError(f"centers must be (B,n_cv) or (n_cv,), got {centers_t.shape}")
+            raise ValueError(
+                f"centers must be (B,n_cv) or (n_cv,), got {centers_t.shape}"
+            )
         self.centers = centers_t  # (B, n_cv)
         self.n_windows = int(centers_t.shape[0])
         self.n_cv = int(centers_t.shape[1])
@@ -151,15 +153,12 @@ class UmbrellaBias(_BiasModelBase):
             if int(kap.numel()) == 1:
                 kap = kap.reshape(()).expand(self.n_cv).clone()
             if int(kap.numel()) != self.n_cv:
-                raise ValueError(
-                    f"kappa length {kap.numel()} != n_cv {self.n_cv}"
-                )
+                raise ValueError(f"kappa length {kap.numel()} != n_cv {self.n_cv}")
             kap = kap.unsqueeze(0).expand(self.n_windows, -1).clone()
         elif kap.ndim == 2:
             if kap.shape != (self.n_windows, self.n_cv):
                 raise ValueError(
-                    f"kappa shape {tuple(kap.shape)} != "
-                    f"({self.n_windows}, {self.n_cv})"
+                    f"kappa shape {tuple(kap.shape)} != ({self.n_windows}, {self.n_cv})"
                 )
         else:
             raise ValueError(f"kappa must be scalar/(n_cv,)/(B,n_cv), got {kap.shape}")
@@ -203,9 +202,7 @@ class UmbrellaBias(_BiasModelBase):
             centers = centers.expand(B, -1)
             kappa = kappa.expand(B, -1)
         elif centers.shape[0] != B:
-            raise ValueError(
-                f"centers B={centers.shape[0]} incompatible with CV B={B}"
-            )
+            raise ValueError(f"centers B={centers.shape[0]} incompatible with CV B={B}")
         delta = self._wrap_delta(s - centers)
         return 0.5 * torch.sum(kappa * delta * delta, dim=-1)
 
@@ -296,7 +293,6 @@ def make_umbrella_centers_1d(
     return centers
 
 
-
 class WellTemperedMetadynamicsBias(_BiasModelBase):
     """Well-tempered MetaD with **shared** hills across walkers.
 
@@ -314,10 +310,17 @@ class WellTemperedMetadynamicsBias(_BiasModelBase):
     For periodic CVs (e.g. backbone φ/ψ), pass ``period`` (scalar or per-CV);
     Gaussian distances then use the minimum-image convention on the torus.
 
-    If ``grid_n`` is set (int or per-CV), hills are splatted onto a periodic
-    grid and ``V(s)`` / forces are cubic B-spline interpolants of that grid.
+    If ``grid_n`` is set (int or per-CV), hills are splatted onto a
+    cubic B-spline grid and ``V(s)`` / forces are interpolants of that grid.
     Evaluation is then **independent of the number of Gaussians** (needed for
-    3D MetaD, where ``n_hills`` otherwise grows as walkers × steps / pace).
+    large walker counts / long runs).
+
+    Grid domain:
+      * periodic CVs — pass ``period`` (axes span ``[-P/2, P/2)``);
+      * non-periodic CVs (distances, …) — pass ``grid_min`` / ``grid_max``
+        (axes span ``[min, max)``; a synthetic period ``max−min`` is used
+        only for the B-spline machinery; exact Gaussian distances stay
+        unwrapped).
     """
 
     def __init__(
@@ -333,6 +336,8 @@ class WellTemperedMetadynamicsBias(_BiasModelBase):
         max_hills: int = 200_000,
         period: float | Sequence[float] | None = None,
         grid_n: int | Sequence[int] | None = None,
+        grid_min: float | Sequence[float] | None = None,
+        grid_max: float | Sequence[float] | None = None,
         device: torch.device | str = "cuda",
         dtype: torch.dtype = torch.float32,
         n_atoms_per_system: int | None = None,
@@ -380,10 +385,16 @@ class WellTemperedMetadynamicsBias(_BiasModelBase):
         )
         self.n_hills = 0
         self._deposit_count = 0
-        self._init_bias_grid(grid_n)
+        self._init_bias_grid(grid_n, grid_min=grid_min, grid_max=grid_max)
 
-    def _init_bias_grid(self, grid_n: int | Sequence[int] | None) -> None:
-        """Optional periodic cubic B-spline grid for O(1) ``V(s)`` evaluation."""
+    def _init_bias_grid(
+        self,
+        grid_n: int | Sequence[int] | None,
+        *,
+        grid_min: float | Sequence[float] | None = None,
+        grid_max: float | Sequence[float] | None = None,
+    ) -> None:
+        """Optional cubic B-spline grid for O(1) ``V(s)`` evaluation."""
         if grid_n is None:
             self._use_grid = False
             return
@@ -400,21 +411,46 @@ class WellTemperedMetadynamicsBias(_BiasModelBase):
             raise ValueError(f"grid_n length {len(gn)} != n_cv {self.n_cv}")
         if any(n < 8 for n in gn):
             raise ValueError("grid_n must be >= 8 per CV for cubic B-spline")
-        if self.period is None:
-            raise ValueError("B-spline grid bias requires periodic CVs (period=...)")
         if self.n_cv > 3:
             raise ValueError("B-spline grid bias supports n_cv <= 3")
+
+        def _as_cv_vec(val, name: str) -> torch.Tensor:
+            t = torch.as_tensor(val, device=self._device, dtype=self._dtype).reshape(-1)
+            if t.numel() == 1:
+                t = t.expand(self.n_cv).clone()
+            if int(t.numel()) != self.n_cv:
+                raise ValueError(f"{name} length {t.numel()} != n_cv {self.n_cv}")
+            return t
+
+        if self.period is not None:
+            # Periodic torus: nodal samples on [-P/2, P/2).
+            origin = -0.5 * self.period
+            grid_period = self.period.clone()
+        elif grid_min is not None and grid_max is not None:
+            # Bounded non-periodic CVs (e.g. distances): pad beyond walls so
+            # synthetic wrap at the seam stays outside the sampled region.
+            gmin = _as_cv_vec(grid_min, "grid_min")
+            gmax = _as_cv_vec(grid_max, "grid_max")
+            if bool((gmax <= gmin).any()):
+                raise ValueError("grid_max must be > grid_min per CV")
+            origin = gmin
+            grid_period = gmax - gmin
+        else:
+            raise ValueError(
+                "B-spline grid bias requires period=... (periodic CVs) "
+                "or grid_min/grid_max (non-periodic CVs)"
+            )
+
         self._use_grid = True
         self._grid_shape = tuple(gn)
-        origin = -0.5 * self.period
-        dx = self.period / torch.as_tensor(
-            gn, device=self._device, dtype=self._dtype
-        )
+        dx = grid_period / torch.as_tensor(gn, device=self._device, dtype=self._dtype)
         axes = [
-            origin[d] + torch.arange(gn[d], device=self._device, dtype=self._dtype) * dx[d]
+            origin[d]
+            + torch.arange(gn[d], device=self._device, dtype=self._dtype) * dx[d]
             for d in range(self.n_cv)
         ]
         self.register_buffer("_grid_origin", origin)
+        self.register_buffer("_grid_period", grid_period)
         self.register_buffer("_grid_dx", dx)
         for d, ax in enumerate(axes):
             self.register_buffer(f"_grid_ax{d}", ax)
@@ -432,7 +468,8 @@ class WellTemperedMetadynamicsBias(_BiasModelBase):
         return [getattr(self, f"_grid_ax{d}") for d in range(self.n_cv)]
 
     def _wrap_cv(self, diff: torch.Tensor, dim: int) -> torch.Tensor:
-        p = self.period[dim]
+        """Min-image wrap on the grid period (periodic or synthetic)."""
+        p = self._grid_period[dim]
         return diff - p * torch.round(diff / p)
 
     def _add_gaussians_to_grid(
@@ -448,7 +485,9 @@ class WellTemperedMetadynamicsBias(_BiasModelBase):
         axes = self.grid_axes()
         n_elem = int(self._grid.numel())
         max_bytes = 64 * 1024 * 1024
-        chunk = max(1, min(B, max_bytes // max(n_elem * int(self._grid.element_size()), 1)))
+        chunk = max(
+            1, min(B, max_bytes // max(n_elem * int(self._grid.element_size()), 1))
+        )
         nd = self.n_cv
         if nd == 1:
             a0 = axes[0]
@@ -485,11 +524,7 @@ class WellTemperedMetadynamicsBias(_BiasModelBase):
                 d2 = self._wrap_cv(a2.view(1, 1, 1, n2) - c[:, 2].view(b, 1, 1, 1), 2)
                 g = h.view(b, 1, 1, 1) * torch.exp(
                     -0.5
-                    * (
-                        (d0 / sig[0]) ** 2
-                        + (d1 / sig[1]) ** 2
-                        + (d2 / sig[2]) ** 2
-                    )
+                    * ((d0 / sig[0]) ** 2 + (d1 / sig[1]) ** 2 + (d2 / sig[2]) ** 2)
                 )
                 self._grid.add_(g.sum(dim=0))
         else:
@@ -537,9 +572,7 @@ class WellTemperedMetadynamicsBias(_BiasModelBase):
         new_cap = max(need, max(cap * 2, 65_536))
         if self.max_hills > 0:
             new_cap = min(new_cap, self.max_hills)
-        new_c = torch.zeros(
-            new_cap, self.n_cv, device=self._device, dtype=self._dtype
-        )
+        new_c = torch.zeros(new_cap, self.n_cv, device=self._device, dtype=self._dtype)
         new_h = torch.zeros(new_cap, device=self._device, dtype=self._dtype)
         if self.n_hills > 0:
             new_c[: self.n_hills] = self._centers[: self.n_hills]
@@ -586,7 +619,7 @@ class WellTemperedMetadynamicsBias(_BiasModelBase):
                 self._coeffs,
                 s,
                 origin=self._grid_origin,
-                period=self.period,
+                period=self._grid_period,
             )
         centers = self._centers[: self.n_hills]  # (H, n_cv)
         heights = self._heights[: self.n_hills]  # (H,)
@@ -894,8 +927,8 @@ class TorchSimUmbrellaSampling(_TorchSimEnhancedDriver):
         dump_every: int | None = None,
         record_cv: bool = True,
     ):
-        dump_every = int(dump_every) if dump_every is not None else max(
-            self.update_pace, 1
+        dump_every = (
+            int(dump_every) if dump_every is not None else max(self.update_pace, 1)
         )
         num_steps = int(num_steps)
 

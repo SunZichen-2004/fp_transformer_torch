@@ -88,9 +88,7 @@ def _cell_rows(cell: torch.Tensor, n_systems: int) -> torch.Tensor:
     if cell.shape[0] == 1 and n_systems > 1:
         return cell.expand(n_systems, 3, 3).contiguous()
     if int(cell.shape[0]) != n_systems:
-        raise ValueError(
-            f"cell batch {int(cell.shape[0])} != n_systems {n_systems}"
-        )
+        raise ValueError(f"cell batch {int(cell.shape[0])} != n_systems {n_systems}")
     return cell
 
 
@@ -122,7 +120,9 @@ def pytorch_cutoff_neighbor_list(
         ``r_i - r_j - unit_shifts @ cell`` is the minimum image.
     """
     if positions.ndim != 2 or positions.shape[-1] != 3:
-        raise ValueError(f"positions must be (n_atoms, 3), got {tuple(positions.shape)}")
+        raise ValueError(
+            f"positions must be (n_atoms, 3), got {tuple(positions.shape)}"
+        )
     n_atoms = int(positions.shape[0])
     if n_systems is None:
         n_systems = int(system_idx.max().item()) + 1 if n_atoms else 0
@@ -137,7 +137,9 @@ def pytorch_cutoff_neighbor_list(
     if not _pbc_any(pbc):
         raise ValueError("pytorch_cutoff_neighbor_list requires PBC")
 
-    cell_b = _cell_rows(cell.to(device=positions.device, dtype=positions.dtype), n_systems)
+    cell_b = _cell_rows(
+        cell.to(device=positions.device, dtype=positions.dtype), n_systems
+    )
     pos = positions.view(n_systems, n_per, 3)
     cutoff_sq = float(cutoff) * float(cutoff)
     # Chunk along replica dim to cap (B, N, N, 3) memory.
@@ -341,7 +343,9 @@ def _kspace_potential_batched(
 
     nx, ny, nz = calculator._fpt_ns
     device = pos_flat.device
-    b_idx = torch.arange(batch, device=device, dtype=torch.long).repeat_interleave(n_per)
+    b_idx = torch.arange(batch, device=device, dtype=torch.long).repeat_interleave(
+        n_per
+    )
     wprod = (
         interp.interpolation_weights[interp.x_shifts, :, 0]
         * interp.interpolation_weights[interp.y_shifts, :, 1]

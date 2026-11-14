@@ -25,12 +25,7 @@ def test_baoab_step_finite_no_nan():
         timestep=1e-4,
         langevin_friction=1.0,
         beta0=1.0,
-        lambda_init=0.2,
-        lambda_max=0.5,
-        ess_threshold=0.9,
-        min_lambda_step=0.05,
-        max_lambda_step=0.2,
-        num_lambda_trials=5,
+        production_lambda=0.2,
         update_pace=5,
     )
     state = integrator.init_state(seed=0)

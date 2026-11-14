@@ -28,7 +28,10 @@ class ParticleDimerParams:
 class ParticleDimer(Potential):
     def __init__(self, params: ParticleDimerParams | None = None, **overrides):
         base = ParticleDimerParams() if params is None else params
-        data = {**base.__dict__, **{k: v for k, v in overrides.items() if v is not None}}
+        data = {
+            **base.__dict__,
+            **{k: v for k, v in overrides.items() if v is not None},
+        }
         # accept legacy key
         if "nsolvent" in overrides and overrides["nsolvent"] is not None:
             data["num_solvent"] = overrides["nsolvent"]
@@ -37,7 +40,10 @@ class ParticleDimer(Potential):
         )
         self.num_particles = int(self.params.num_solvent) + 2
         eye = torch.eye(self.num_particles, dtype=torch.float64)
-        mask = torch.ones((self.num_particles, self.num_particles), dtype=torch.float64) - eye
+        mask = (
+            torch.ones((self.num_particles, self.num_particles), dtype=torch.float64)
+            - eye
+        )
         mask[0, 1] = 0.0
         mask[1, 0] = 0.0
         self.mask_matrix = mask
@@ -61,7 +67,9 @@ class ParticleDimer(Potential):
         ]
         ii, jj = torch.meshgrid(locs, locs, indexing="ij")
         solvent = torch.stack([ii.reshape(-1), jj.reshape(-1)], dim=-1)
-        dimer = torch.tensor([[-0.5 * dmid, 0.0], [0.5 * dmid, 0.0]], dtype=torch.float64)
+        dimer = torch.tensor(
+            [[-0.5 * dmid, 0.0], [0.5 * dmid, 0.0]], dtype=torch.float64
+        )
         coords = torch.cat([dimer, solvent], dim=0).unsqueeze(0)
         return scaling_factor * coords
 
@@ -97,7 +105,9 @@ class ParticleDimer(Potential):
         d2 = d0 * d0
         d4 = d2 * d2
         interaction = (
-            self.params.dimer_slope * d0 - self.params.dimer_a * d2 + self.params.dimer_b * d4
+            self.params.dimer_slope * d0
+            - self.params.dimer_a * d2
+            + self.params.dimer_b * d4
         )
         return energy_dx + energy_dy + interaction
 

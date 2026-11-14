@@ -234,9 +234,7 @@ class GaffForceFieldEnergy:
             phi = torch.atan2(-sin_phi, cos_phi)
             dn = dihedral_n.to(dtype=dtype)
             dphi = dn * phi - dihedral_phi0
-            energy = energy + torch.sum(
-                dihedral_k * (1.0 + torch.cos(dphi)), dim=-1
-            )
+            energy = energy + torch.sum(dihedral_k * (1.0 + torch.cos(dphi)), dim=-1)
 
         # NB14 corrections on the dense pair table
         if nb14_lj_factor.numel() > 0:

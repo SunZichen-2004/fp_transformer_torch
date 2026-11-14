@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fp-transformer-torch"
-version = "0.1.0"
-description = "PyTorch BAOAB + Fokker–Planck sampling (slim port)"
+version = "0.2.0"
+description = "Subspace Fokker-Planck ensemble sampling with fixed production strength"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.22",
   "torch>=2.0",
@@ -15,6 +15,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+simulation = ["torch-sim-atomistic>=0.6.1", "ase>=3.22"]
+pme = ["torch-pme>=0.5"]
+mlip = ["mace-torch>=0.3"]
+analysis = ["scipy>=1.10", "matplotlib>=3.7"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

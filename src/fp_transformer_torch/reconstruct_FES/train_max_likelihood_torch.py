@@ -64,6 +64,35 @@ def load_cv_datasets(
     If ``max_stages`` is set, keep only the first ``max_stages`` files ordered by
     ``stage####`` index (e.g. 16 → stage0000 … stage0015).
     """
+    archive = (
+        data_directory
+        if data_directory.is_file()
+        else data_directory / "trajectory.npz"
+    )
+    if archive.is_file() and archive.suffix == ".npz":
+        with np.load(archive, allow_pickle=False) as z:
+            if not bool(z["complete"]):
+                raise ValueError("incomplete trajectory archive")
+            selected = (z["phase"] == "production") & (z["time_ps"] > 0)
+            indices = np.flatnonzero(selected)
+            if max_stages is not None:
+                if int(max_stages) < 1:
+                    raise ValueError("max_stages must be positive")
+                indices = indices[: int(max_stages)]
+            if not len(indices):
+                raise ValueError("no production frames in archive")
+            data = z["cv"][indices]
+            dim = data.shape[-1]
+            if expected_cv_dim is not None and dim != expected_cv_dim:
+                raise ValueError("archive CV dimension does not match expected_cv_dim")
+            lambdas = z["lambda_value"][indices]
+            if not np.isfinite(lambdas).all() or (lambdas <= 0).any():
+                raise ValueError("the fitter requires positive sFPT lambdas")
+            samples = [row.reshape(-1, dim).astype(np.float64) for row in data]
+            if embedding == "torus":
+                samples = [(row + np.pi) % (2 * np.pi) - np.pi for row in samples]
+            return samples, lambdas.tolist(), [len(row) for row in samples], dim
+
     pattern = str(data_directory / file_glob)
     file_paths = sorted(glob(pattern))
     if not file_paths:
@@ -81,18 +110,23 @@ def load_cv_datasets(
         n = int(max_stages)
         if n < 1:
             raise ValueError(f"--max-stages must be >= 1, got {n}")
-        staged = [p for p in file_paths if parse_stage_index_from_filename(p) is not None]
+        staged = [
+            p for p in file_paths if parse_stage_index_from_filename(p) is not None
+        ]
         others = [p for p in file_paths if parse_stage_index_from_filename(p) is None]
         if staged:
             file_paths = staged[:n]
             print(
                 f"[select] first {len(file_paths)} stage file(s) "
-                f"(max_stages={n}); skipped later stages / non-stage files={len(staged)-len(file_paths)+len(others)}",
+                f"(max_stages={n}); skipped later stages / non-stage files={len(staged) - len(file_paths) + len(others)}",
                 flush=True,
             )
         else:
             file_paths = file_paths[:n]
-            print(f"[select] first {len(file_paths)} file(s) by name (max_stages={n})", flush=True)
+            print(
+                f"[select] first {len(file_paths)} file(s) by name (max_stages={n})",
+                flush=True,
+            )
 
     samples_per_dataset: list[np.ndarray] = []
     lambda_per_dataset: list[float] = []
@@ -125,9 +159,7 @@ def load_cv_datasets(
                     f"but --cv-dim {expected_cv_dim} was requested."
                 )
         elif d != cv_dim:
-            raise ValueError(
-                f"File '{file_path}' has last dim {d}, expected {cv_dim}."
-            )
+            raise ValueError(f"File '{file_path}' has last dim {d}, expected {cv_dim}.")
 
         samples = array.reshape(-1, cv_dim)
         if embedding == "torus":
@@ -197,7 +229,9 @@ class FreeEnergyMLP(nn.Module):
         return self.net(features).reshape(-1)
 
 
-def log_hypercube_volume(bounds_lo: torch.Tensor, bounds_hi: torch.Tensor) -> torch.Tensor:
+def log_hypercube_volume(
+    bounds_lo: torch.Tensor, bounds_hi: torch.Tensor
+) -> torch.Tensor:
     widths = bounds_hi - bounds_lo
     if torch.any(widths <= 0):
         raise ValueError(f"invalid CV bounds: lo={bounds_lo}, hi={bounds_hi}")
@@ -215,9 +249,16 @@ def sample_reference_points(
 ) -> torch.Tensor:
     if embedding == "torus":
         # Uniform on [-π, π)^D
-        u = torch.rand((n, cv_dim), generator=generator, dtype=bounds_lo.dtype, device=bounds_lo.device)
+        u = torch.rand(
+            (n, cv_dim),
+            generator=generator,
+            dtype=bounds_lo.dtype,
+            device=bounds_lo.device,
+        )
         return u * (2.0 * torch.pi) - torch.pi
-    u = torch.rand((n, cv_dim), generator=generator, dtype=bounds_lo.dtype, device=bounds_lo.device)
+    u = torch.rand(
+        (n, cv_dim), generator=generator, dtype=bounds_lo.dtype, device=bounds_lo.device
+    )
     return bounds_lo + u * (bounds_hi - bounds_lo)
 
 
@@ -233,9 +274,9 @@ def build_reference_grid(
     n = int(grid_n)
     if n < 2:
         raise ValueError(f"--grid-n must be >= 2, got {n}")
-    if cv_dim > 3 and n ** cv_dim > 2_000_000:
+    if cv_dim > 3 and n**cv_dim > 2_000_000:
         raise ValueError(
-            f"grid too large: grid_n={n}, D={cv_dim} → {n ** cv_dim} points; "
+            f"grid too large: grid_n={n}, D={cv_dim} → {n**cv_dim} points; "
             "use --z-method mc or reduce --grid-n"
         )
 
@@ -246,7 +287,10 @@ def build_reference_grid(
         if embedding == "torus":
             # cell centers on [-π, π)
             dx = (2.0 * torch.pi) / float(n)
-            axis = -torch.pi + (torch.arange(n, device=lo.device, dtype=lo.dtype) + 0.5) * dx
+            axis = (
+                -torch.pi
+                + (torch.arange(n, device=lo.device, dtype=lo.dtype) + 0.5) * dx
+            )
         else:
             width = hi - lo
             dx = width / float(n)
@@ -272,7 +316,9 @@ def negative_log_likelihood(
     f_ref = model(ref_feat)
     # log Z_k = log V + logsumexp(-α_k F) - log M
     log_m = torch.log(
-        torch.tensor(float(reference_cv.shape[0]), dtype=f_ref.dtype, device=f_ref.device)
+        torch.tensor(
+            float(reference_cv.shape[0]), dtype=f_ref.dtype, device=f_ref.device
+        )
     )
     # [K, M]
     scaled = -alpha_per_dataset[:, None] * f_ref[None, :]
@@ -302,7 +348,7 @@ def grid_smoothness_penalty(
     n = int(grid_n)
     if f_flat.numel() != n * n:
         raise ValueError(
-            f"smoothness expects n*n={n*n} values, got {int(f_flat.numel())}"
+            f"smoothness expects n*n={n * n} values, got {int(f_flat.numel())}"
         )
     f = f_flat.reshape(n, n)
     # first differences along each axis
@@ -325,10 +371,7 @@ def infer_bounds(
     if cli_bounds:
         vals = [float(x) for x in cli_bounds.replace(";", ",").split(",") if x.strip()]
         if len(vals) % 2 != 0 or len(vals) < 2:
-            raise ValueError(
-                "--bounds must be lo1,hi1,lo2,hi2,... got "
-                f"{cli_bounds!r}"
-            )
+            raise ValueError(f"--bounds must be lo1,hi1,lo2,hi2,... got {cli_bounds!r}")
         arr = np.asarray(vals, dtype=np.float64).reshape(-1, 2)
         return arr[:, 0].copy(), arr[:, 1].copy()
 
@@ -427,7 +470,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--loss_history_name", type=str, default="loss_history.npy")
     p.add_argument("--log_every", type=int, default=100)
     p.add_argument("--device", type=str, default="cuda")
-    p.add_argument("--temperature", type=float, default=300.0, help="T for unit conversion metadata.")
+    p.add_argument(
+        "--temperature",
+        type=float,
+        default=300.0,
+        help="T for unit conversion metadata.",
+    )
     return p
 
 
@@ -460,10 +508,16 @@ def main() -> None:
 
     if args.embedding == "torus":
         log_vol = torch.tensor(
-            float(cv_dim) * float(np.log(2.0 * np.pi)), dtype=torch.float32, device=device
+            float(cv_dim) * float(np.log(2.0 * np.pi)),
+            dtype=torch.float32,
+            device=device,
         )
-        bounds_lo = torch.full((cv_dim,), -float(np.pi), dtype=torch.float32, device=device)
-        bounds_hi = torch.full((cv_dim,), float(np.pi), dtype=torch.float32, device=device)
+        bounds_lo = torch.full(
+            (cv_dim,), -float(np.pi), dtype=torch.float32, device=device
+        )
+        bounds_hi = torch.full(
+            (cv_dim,), float(np.pi), dtype=torch.float32, device=device
+        )
     else:
         bounds_lo = torch.as_tensor(lo_np, dtype=torch.float32, device=device)
         bounds_hi = torch.as_tensor(hi_np, dtype=torch.float32, device=device)
@@ -488,7 +542,9 @@ def main() -> None:
         flush=True,
     )
     print(f"Z domain lo={lo_np} hi={hi_np}  logV={float(log_vol):.6f}", flush=True)
-    for idx, (lam, nk) in enumerate(zip(lambda_per_dataset, sample_counts, strict=True)):
+    for idx, (lam, nk) in enumerate(
+        zip(lambda_per_dataset, sample_counts, strict=True)
+    ):
         print(
             f"  dataset {idx}: lambda={lam:g}, alpha={alpha_list[idx]:.6f}, N={nk}",
             flush=True,
@@ -532,8 +588,10 @@ def main() -> None:
     if smooth_weight > 0.0:
         if cv_dim != 2:
             raise ValueError("--smooth-weight > 0 currently requires 2D CV")
-        smooth_n = int(args.smooth_grid_n) if args.smooth_grid_n is not None else (
-            int(args.grid_n) if z_method == "grid" else 128
+        smooth_n = (
+            int(args.smooth_grid_n)
+            if args.smooth_grid_n is not None
+            else (int(args.grid_n) if z_method == "grid" else 128)
         )
         if z_method == "grid" and smooth_n == int(args.grid_n):
             smooth_grid = None  # reuse Z reference grid / f_ref

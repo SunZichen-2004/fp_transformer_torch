@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 
 import pytest
+
+pytest.importorskip("torch_sim")
 import torch
 
 torch_sim = pytest.importorskip("torch_sim")
@@ -72,3 +74,37 @@ def test_grid_bias_grad_matches_exact():
     err = (ge - gg).abs()
     assert float(err.max()) < 5e-3
     assert float(err.mean()) < 5e-4
+
+
+def test_nonperiodic_grid_bias_matches_exact():
+    """Distance-like CVs: grid_min/grid_max without period."""
+
+    def cv2(coord: torch.Tensor) -> torch.Tensor:
+        return coord[:, 0, :2]
+
+    kw = dict(
+        n_cv=2,
+        sigma=(0.2, 0.2),
+        height=0.02,
+        bias_factor=30.0,
+        temperature=300.0,
+        max_hills=0,
+        device="cpu",
+        dtype=torch.float64,
+        n_atoms_per_system=1,
+    )
+    exact = WellTemperedMetadynamicsBias(cv2, **kw)
+    grid = WellTemperedMetadynamicsBias(
+        cv2, grid_n=81, grid_min=(0.0, 0.0), grid_max=(10.0, 10.0), **kw
+    )
+    assert grid.use_grid and grid.period is None
+    rng = torch.Generator().manual_seed(3)
+    s = 1.0 + 5.0 * torch.rand(24, 2, generator=rng, dtype=torch.float64)
+    coord = torch.zeros(24, 1, 3, dtype=torch.float64)
+    coord[:, 0, :2] = s
+    exact.deposit(coord)
+    grid.deposit(coord)
+    q = 1.0 + 5.0 * torch.rand(64, 2, generator=rng, dtype=torch.float64)
+    err = (exact.bias_potential_cv(q) - grid.bias_potential_cv(q)).abs()
+    assert float(err.max()) < 5e-4
+    assert float(err.mean()) < 5e-5

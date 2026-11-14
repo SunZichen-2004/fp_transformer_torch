@@ -8,7 +8,9 @@ def test_pairwise_distance_shape_and_symmetry():
     d = pairwise_distance(x)
     assert d.shape == (4, 4)
     assert torch.allclose(d, d.T, atol=1e-10)
-    assert torch.allclose(torch.diag(d), torch.zeros(4, dtype=torch.float64), atol=1e-10)
+    assert torch.allclose(
+        torch.diag(d), torch.zeros(4, dtype=torch.float64), atol=1e-10
+    )
 
 
 def test_torus_distance_periodic():

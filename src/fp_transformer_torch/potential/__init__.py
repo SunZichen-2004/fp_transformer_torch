@@ -7,13 +7,6 @@ from .mace import (
     load_mace_torch_sim_model,
     resolve_mace_checkpoint,
 )
-from .mechanical_embedding_MLMM import (
-    MechanicalEmbeddingMLMM,
-    MLMMTopology,
-    TIP3P_PARAMS,
-    build_topology_from_sponge_and_tip3p,
-    build_tip3p_only_topology,
-)
 from .particle_dimer import ParticleDimer, ParticleDimerParams
 from .double_well import DoubleWell2D, DoubleWellParams
 from .sharded_mace import (
@@ -56,3 +49,27 @@ __all__ = [
     "torchpme_energy_forces",
     "warp_free_neighbor_list",
 ]
+
+try:
+    from .mechanical_embedding_MLMM import (
+        MechanicalEmbeddingMLMM,
+        MLMMTopology,
+        TIP3P_PARAMS,
+        build_topology_from_sponge_and_tip3p,
+        build_tip3p_only_topology,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name and exc.name.split(".")[0] != "torch_sim":
+        raise
+    __all__ = [
+        name
+        for name in __all__
+        if name
+        not in {
+            "MechanicalEmbeddingMLMM",
+            "MLMMTopology",
+            "TIP3P_PARAMS",
+            "build_topology_from_sponge_and_tip3p",
+            "build_tip3p_only_topology",
+        }
+    ]

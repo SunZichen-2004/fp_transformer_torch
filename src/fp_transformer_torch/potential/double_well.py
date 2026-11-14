@@ -38,7 +38,10 @@ class DoubleWell2D(Potential):
 
     def __init__(self, params: DoubleWellParams | None = None, **overrides):
         base = DoubleWellParams() if params is None else params
-        data = {**base.__dict__, **{k: v for k, v in overrides.items() if v is not None}}
+        data = {
+            **base.__dict__,
+            **{k: v for k, v in overrides.items() if v is not None},
+        }
         self.params = DoubleWellParams(
             **{k: data[k] for k in DoubleWellParams.__dataclass_fields__}
         )

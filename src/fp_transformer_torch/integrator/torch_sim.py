@@ -1,4 +1,4 @@
-"""Fokker–Planck bias as a torch-sim ``ModelInterface`` (+ annealing driver).
+"""Fokker–Planck bias as a torch-sim ``ModelInterface`` (+ fixed-lambda driver).
 
 ``SumModel(mace_model, FPTBias(...))`` adds the FP pullback force on top of the
 base ML potential. Sign convention matches
@@ -19,6 +19,8 @@ from __future__ import annotations
 import sys
 import time
 from typing import Any, Callable, Optional, Sequence
+
+from .protocol import validate_lambda, run_fixed_protocol
 
 import numpy as np
 import torch
@@ -82,7 +84,7 @@ class FPTBias(_ModelInterface):
     ):
         if _ModelInterface is torch.nn.Module:
             raise ImportError(
-                "torch_sim is required for FPTBias. Activate conda env MACE_torchsim."
+                "torch_sim is required for FPTBias. Install the simulation extra: pip install fp-transformer-torch[simulation]."
             )
         super().__init__()
         self.collective_variable = collective_variable
@@ -197,7 +199,7 @@ class FPTBias(_ModelInterface):
 
 
 class TorchSimFokkerPlanckIntegrator:
-    """λ-annealing driver around ``torch_sim.integrate`` + ``SumModel``.
+    """Fixed-λ driver around ``torch_sim.integrate`` + ``SumModel``.
 
     Thermal bath / BAOAB is handled by ``ts.Integrator.nvt_langevin`` (metal units:
     timestep in ps, friction in 1/ps, temperature in K). FP bias strength is
@@ -215,12 +217,7 @@ class TorchSimFokkerPlanckIntegrator:
         langevin_friction: float,
         temperature: float,
         beta0: float,
-        lambda_init: float,
-        lambda_max: float,
-        ess_threshold: float,
-        min_lambda_step: float,
-        max_lambda_step: float,
-        num_lambda_trials: int,
+        production_lambda: float,
         update_pace: int = 20,
         log_density_epsilon: float = 1e-12,
         device: torch.device | str | None = None,
@@ -234,18 +231,13 @@ class TorchSimFokkerPlanckIntegrator:
         self.langevin_friction = float(langevin_friction)
         self.temperature = float(temperature)
         self.beta0 = float(beta0)
-        self.lambda_init = float(lambda_init)
-        self.lambda_max = float(lambda_max)
-        self.ess_threshold = float(ess_threshold)
-        self.min_lambda_step = float(min_lambda_step)
-        self.max_lambda_step = float(max_lambda_step)
-        self.num_lambda_trials = max(2, int(num_lambda_trials))
+        self.production_lambda = validate_lambda(production_lambda)
         self.update_pace = max(1, int(update_pace))
         self.log_density_epsilon = float(log_density_epsilon)
         self.device = torch.device(device or fpt_bias.device)
         self.dtype = dtype
 
-        self.lambda_current = self.lambda_init
+        self.lambda_current = self.production_lambda
         self.kernel_grad_beta = self.lambda_current * self.beta0
         self.fpt_bias.set_kernel_grad_beta(self.kernel_grad_beta)
         self.fpt_bias.update_pace = self.update_pace
@@ -283,15 +275,15 @@ class TorchSimFokkerPlanckIntegrator:
             "kinetic_temperature_max": float(t.max().item()),
         }
 
-    def estimate_collective_variable_density(self, coordinate: torch.Tensor) -> dict[str, Any]:
+    def estimate_collective_variable_density(
+        self, coordinate: torch.Tensor
+    ) -> dict[str, Any]:
         collective = self.collective_variable(coordinate).detach()
         bandwidth = self.gaussian_kernel.bandwidth.detach()
         kernel_matrix = self.gaussian_kernel.kernel_matrix(collective, bandwidth)
         row_sum = torch.sum(kernel_matrix, dim=-1)
         batch = int(collective.shape[0])
-        log_density = torch.log(
-            row_sum / float(batch) + self.log_density_epsilon
-        )
+        log_density = torch.log(row_sum / float(batch) + self.log_density_epsilon)
         log_density_np = log_density.detach().cpu().numpy().astype(np.float64)
 
         def log_density_fn(points: np.ndarray) -> np.ndarray:
@@ -308,81 +300,6 @@ class TorchSimFokkerPlanckIntegrator:
         }
         self._density_cache = info
         return info
-
-    @staticmethod
-    def compute_ess(weights: np.ndarray) -> float:
-        weights = np.asarray(weights, dtype=np.float64).reshape(-1)
-        total = float(np.sum(weights))
-        if total <= 0.0:
-            return 0.0
-        sum_squares = float(np.sum(weights * weights))
-        if sum_squares <= 0.0:
-            return 0.0
-        return (total * total) / sum_squares
-
-    @staticmethod
-    def compute_reweight_weights(
-        collective_variable_values: np.ndarray,
-        density_info: dict[str, Any],
-        lambda_current: float,
-        lambda_next: float,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        log_density = density_info["log_density_fn"](
-            np.asarray(collective_variable_values, dtype=np.float64)
-        )
-        eta = (lambda_next - lambda_current) / (
-            lambda_current * (1.0 + lambda_next)
-        )
-        log_weights = eta * log_density
-        log_weights = log_weights - np.max(log_weights)
-        unnormalized = np.exp(log_weights)
-        normalized = unnormalized / np.sum(unnormalized)
-        return unnormalized, normalized
-
-    def choose_next_lambda(
-        self,
-        collective_variable_values: np.ndarray,
-        density_info: dict[str, Any],
-        lambda_current: float,
-    ) -> float:
-        low = lambda_current + self.min_lambda_step
-        high = min(self.lambda_max, lambda_current + self.max_lambda_step)
-        if low >= high - 1e-15:
-            return min(lambda_current + self.min_lambda_step, self.lambda_max)
-        trials = np.linspace(low, high, self.num_lambda_trials)
-        batch = int(np.asarray(collective_variable_values).shape[0])
-        chosen = lambda_current
-        for candidate in trials:
-            unnormalized, _ = self.compute_reweight_weights(
-                collective_variable_values,
-                density_info,
-                lambda_current,
-                float(candidate),
-            )
-            ess_ratio = self.compute_ess(unnormalized) / float(batch)
-            if ess_ratio >= self.ess_threshold:
-                chosen = float(candidate)
-        if chosen <= lambda_current + 1e-15:
-            chosen = float(trials[0])
-        return min(chosen, self.lambda_max)
-
-    def advance_lambda(
-        self,
-        state,
-        collective_variable_values: np.ndarray,
-        density_info: dict[str, Any],
-        lambda_current: float,
-        lambda_next: float,
-    ):
-        unnormalized, normalized = self.compute_reweight_weights(
-            collective_variable_values,
-            density_info,
-            lambda_current,
-            lambda_next,
-        )
-        self.lambda_current = float(lambda_next)
-        self.sync_lambda_to_kernel_grad_beta()
-        return state, unnormalized, normalized
 
     def run_stage(
         self,
@@ -490,170 +407,37 @@ class TorchSimFokkerPlanckIntegrator:
     def run(
         self,
         system,
-        stage_steps: int,
+        production_steps: int,
         *,
-        verbose: bool = False,
-        verbose_pace: int = 100,
-        show_progress: bool = True,
-        on_lambda_change: Optional[Callable[..., Any]] = None,
-        on_stage_end: Optional[Callable[..., Any]] = None,
-        heal_lambdas: Optional[Sequence[float]] = None,
-        heal_steps: int | None = None,
-        max_stages: int | None = None,
-        max_runtime_sec: float | None = None,
+        dump_every=100,
+        heal_lambdas=None,
+        heal_steps=None,
+        on_frame=None,
+        verbose=False,
+        verbose_pace=100,
+        show_progress=True,
     ):
-        """Run optional λ-heal schedule, then ESS-based λ annealing.
+        """Prescribed healing followed by fixed-lambda production; no reweighting."""
 
-        Heal phase (optional)
-        ---------------------
-        For each ``λ`` in ``heal_lambdas``, hard-set the FP strength and run
-        ``heal_steps`` (default: ``stage_steps``) of dynamics. No ESS reweighting
-        between heal λ values — this is intentional for a non-monotonic warmup
-        schedule such as ``0.2, 0.1, 0.5, 0.02, 0.01``.
-
-        Anneal phase
-        ------------
-        Starts at ``lambda_init`` and increases toward ``lambda_max`` using
-        ESS-constrained reweighting (original behaviour).
-
-        ``max_stages`` / ``max_runtime_sec`` stop the anneal loop early (heal
-        time is included in the runtime budget).
-        """
-        state = system
-        t_run0 = time.perf_counter()
-
-        def _runtime_exceeded() -> bool:
-            if max_runtime_sec is None:
-                return False
-            return (time.perf_counter() - t_run0) >= float(max_runtime_sec)
-
-        def _call_stage_end(stage_i: int, lam: float, st, *, phase: str) -> None:
-            if on_stage_end is None:
-                return
-            try:
-                on_stage_end(stage_i, float(lam), st, phase=phase)
-            except TypeError:
-                on_stage_end(stage_i, float(lam), st)
-
-        # --- Heal / warmup: prescribed λ sequence ---------------------------------
-        if heal_lambdas:
-            heal_list = [float(x) for x in heal_lambdas]
-            n_heal = int(heal_steps) if heal_steps is not None else int(stage_steps)
-            if n_heal <= 0:
-                raise ValueError(f"heal_steps must be > 0, got {n_heal}")
-            if verbose:
-                print(
-                    f"[TorchSimFokkerPlanck] heal: {len(heal_list)} λ values "
-                    f"{heal_list} × {n_heal} steps each",
-                    flush=True,
-                )
-            for heal_i, lam in enumerate(heal_list):
-                if _runtime_exceeded():
-                    if verbose:
-                        print(
-                            "[TorchSimFokkerPlanck] max_runtime_sec reached during heal",
-                            flush=True,
-                        )
-                    return state
-                self.lambda_current = float(lam)
-                self.sync_lambda_to_kernel_grad_beta()
-                if verbose:
-                    print(
-                        f"[TorchSimFokkerPlanck] heal {heal_i}: "
-                        f"{n_heal} steps at lambda={self.lambda_current:.8g}",
-                        flush=True,
-                    )
-                state = self.run_stage(
-                    state,
-                    n_heal,
-                    verbose=verbose,
-                    verbose_pace=verbose_pace,
-                    show_progress=show_progress,
-                )
-                _call_stage_end(
-                    heal_i, float(self.lambda_current), state, phase="heal"
-                )
-
-        # --- Anneal: ESS-driven λ increase from lambda_init ----------------------
-        self.lambda_current = float(self.lambda_init)
-        self.sync_lambda_to_kernel_grad_beta()
-        stage_index = 0
-        if verbose:
-            print(
-                f"[TorchSimFokkerPlanck] anneal: start λ={self.lambda_current:.8g} "
-                f"→ max={self.lambda_max:.8g}, {stage_steps} steps/stage",
-                flush=True,
-            )
-        while self.lambda_current < self.lambda_max - 1e-12:
-            if max_stages is not None and stage_index >= int(max_stages):
-                if verbose:
-                    print(
-                        f"[TorchSimFokkerPlanck] max_stages={max_stages} reached",
-                        flush=True,
-                    )
-                break
-            if _runtime_exceeded():
-                if verbose:
-                    print(
-                        "[TorchSimFokkerPlanck] max_runtime_sec reached during anneal",
-                        flush=True,
-                    )
-                break
-            if verbose:
-                print(
-                    f"[TorchSimFokkerPlanck] anneal stage {stage_index}: "
-                    f"{stage_steps} steps at lambda={self.lambda_current:.8g}",
-                    flush=True,
-                )
-            state = self.run_stage(
-                state,
-                int(stage_steps),
+        def advance(st, steps):
+            return self.run_stage(
+                st,
+                steps,
                 verbose=verbose,
                 verbose_pace=verbose_pace,
                 show_progress=show_progress,
             )
-            _call_stage_end(
-                stage_index, float(self.lambda_current), state, phase="anneal"
-            )
-            coords = sim_state_to_batched_coordinates(state)
-            density_info = self.estimate_collective_variable_density(coords)
-            collective_np = (
-                self.collective_variable(coords).detach().cpu().numpy()
-            )
-            lambda_k = float(self.lambda_current)
-            lambda_next = float(
-                self.choose_next_lambda(collective_np, density_info, lambda_k)
-            )
-            if lambda_next <= lambda_k + 1e-15:
-                if verbose:
-                    print(
-                        f"[TorchSimFokkerPlanck] cannot increase lambda beyond {lambda_k}",
-                        flush=True,
-                    )
-                break
-            state_before = state
-            state, unnormalized, normalized = self.advance_lambda(
-                state, collective_np, density_info, lambda_k, lambda_next
-            )
-            if verbose:
-                print(
-                    f"[TorchSimFokkerPlanck] lambda {lambda_k:.8g} → {lambda_next:.8g} "
-                    f"(ESS/N={self.compute_ess(unnormalized) / collective_np.shape[0]:.4g})",
-                    flush=True,
-                )
-            if on_lambda_change is not None:
-                on_lambda_change(
-                    lambda_k,
-                    lambda_next,
-                    state,
-                    density_info,
-                    stage_index,
-                    state_before_advance=state_before,
-                    unnormalized_weights=unnormalized,
-                    normalized_weights=normalized,
-                )
-            stage_index += 1
-        return state
+
+        return run_fixed_protocol(
+            self,
+            system,
+            advance,
+            production_steps,
+            dump_every,
+            heal_lambdas,
+            heal_steps,
+            on_frame,
+        )
 
     def to_sampler_state(self, state) -> SamplerState:
         """Convert a torch-sim MD/SimState to ``SamplerState`` (coords only)."""

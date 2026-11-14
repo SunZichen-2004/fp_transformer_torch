@@ -28,8 +28,12 @@ class CartesianComponent(CollectiveVariable):
         i = self.particle_index
         j = self.dim_index
         if i < 0 or i >= coordinate.shape[1]:
-            raise IndexError(f"particle_index={i} out of range for {tuple(coordinate.shape)}")
+            raise IndexError(
+                f"particle_index={i} out of range for {tuple(coordinate.shape)}"
+            )
         if j < 0 or j >= coordinate.shape[2]:
-            raise IndexError(f"dim_index={j} out of range for {tuple(coordinate.shape)}")
+            raise IndexError(
+                f"dim_index={j} out of range for {tuple(coordinate.shape)}"
+            )
         out = coordinate[:, i, j][:, None, None]
         return out[0] if squeeze else out
