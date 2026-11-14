@@ -52,4 +52,4 @@ The neural maximum-likelihood FES fitter is retained and accepts both consolidat
 
 ## Migration from 0.1
 
-Replace `lambda_init`, `lambda_max`, ESS thresholds and lambda-step parameters with `production_lambda`. Replace the old annealing `.run(stage_steps, ...)` call with `.run(production_steps, dump_every=..., ...)`. Use `on_frame` to collect results. The experimental resident multi-GPU BAOAB driver and JAX FES fitter have been removed; force-model sharding remains available.
+Replace `lambda_init`, `lambda_max`, ESS thresholds and lambda-step parameters with `production_lambda`. Replace the old annealing `.run(stage_steps, ...)` call with `.run(production_steps, dump_every=..., ...)`. Use `on_frame` to collect results. The experimental resident multi-GPU BAOAB driver, JAX FES fitter, alternative local bandwidth rules and frozen-center score option have been removed; force-model sharding remains available. The kernel retains the paper's joint replica gradient and row-sum bandwidth rescaling.
